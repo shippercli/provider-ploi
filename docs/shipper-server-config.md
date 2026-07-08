@@ -116,3 +116,46 @@ Support these first:
 - destroy cleanup for Shipper-managed preview servers
 
 That is enough to unlock preview infrastructure and temporary staging flows.
+
+## Current implementation shape
+
+The current core implementation validates and supports:
+
+- `mode: existing` with `id`
+- `mode: create` with:
+  - `spec.name`
+  - `spec.credential` or `spec.provider_id` or `spec.provider`
+  - `spec.region`
+  - `spec.plan` or `spec.size`
+- cleanup policies:
+  - `destroy`
+  - `retain`
+  - `manual`
+
+Current Ploi behavior proves ownership through a deterministic managed name. Cleanup only deletes servers that match that managed identity, and it refuses deletion if only an unmanaged human-facing name exists.
+
+Updated create example:
+
+```yaml
+providers:
+  ploi:
+    api_key: ${PLOI_API_KEY}
+
+projects:
+  api:
+    provider: ploi
+    profiles:
+      preview:
+        domain: "preview.example.com"
+        infrastructure:
+          server:
+            mode: create
+            cleanup: destroy
+            ttl: 72h
+            spec:
+              name: "api-pr-${PR_NUMBER}"
+              credential: "42"
+              region: "fra1"
+              plan: "vc2-1c-2gb"
+              php_version: "8.3"
+```

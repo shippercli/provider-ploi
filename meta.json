@@ -6,6 +6,7 @@
   "statusNote": "Currently in early testing. Some features may not work as expected on all Ploi instances.",
   "description": "Manage servers and deployments through the Ploi API. Ideal for developers who want a managed server control panel with a clean UI.",
   "features": [
+    "Server Lifecycle",
     "Site Management",
     "SSL Certificates",
     "Database Management",
@@ -15,8 +16,7 @@
   ],
   "config": {
     "provider": "ploi",
-    "api_key": "${PLOI_API_KEY}",
-    "server_id": "123456"
+    "api_key": "${PLOI_API_KEY}"
   },
-  "install": "composer require shippercli/ploi-provider"
+  "install": "composer require shippercli/provider-ploi"
 }

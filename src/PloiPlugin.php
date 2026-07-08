@@ -14,7 +14,7 @@ final class PloiPlugin implements ShipperPluginInterface
     public function providers(): array
     {
         return [
-            PloiServiceProvider::class,
+            PloiProvider::class,
         ];
     }
 }

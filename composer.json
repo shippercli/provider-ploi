@@ -5,15 +5,33 @@
     "license": "MIT",
     "require": {
         "php": "^8.3",
-        "shippercli/contracts": "^1.0"
+        "ploi/ploi-php-sdk": "^1.9"
+    },
+    "require-dev": {
+        "mockery/mockery": "^1.6",
+        "pestphp/pest": "^3.8"
     },
     "autoload": {
         "psr-4": {
-            "ShipperCli\\ProviderPloi\\": "src/"
+            "ShipperCli\\ProviderPloi\\": "src/",
+            "ShipperCli\\Contracts\\": "src/Contracts/"
         }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "ShipperCli\\ProviderPloi\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "php vendor/bin/pest --no-coverage"
     },
     "extra": {
         "shipper-plugin": "ShipperCli\\ProviderPloi\\PloiPlugin"
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
     },
     "minimum-stability": "stable",
     "prefer-stable": true
