@@ -1,0 +1,22 @@
+{
+  "name": "Ploi",
+  "slug": "ploi",
+  "logo": "logo.webp",
+  "status": "beta",
+  "statusNote": "Currently in early testing. Some features may not work as expected on all Ploi instances.",
+  "description": "Manage servers and deployments through the Ploi API. Ideal for developers who want a managed server control panel with a clean UI.",
+  "features": [
+    "Site Management",
+    "SSL Certificates",
+    "Database Management",
+    "Queue Workers",
+    "Cron Jobs",
+    "Environment Variables"
+  ],
+  "config": {
+    "provider": "ploi",
+    "api_key": "${PLOI_API_KEY}",
+    "server_id": "123456"
+  },
+  "install": "composer require shippercli/ploi-provider"
+}
