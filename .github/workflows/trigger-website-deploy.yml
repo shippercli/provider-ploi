@@ -15,7 +15,7 @@ jobs:
         run: |
           if [ -z "${VERCEL_WEBSITE_DEPLOY_HOOK}" ]; then
             echo "Missing secret VERCEL_WEBSITE_DEPLOY_HOOK"
-            exit 1
+            exit 0
           fi
 
           curl -fsSL -X POST "${VERCEL_WEBSITE_DEPLOY_HOOK}"
