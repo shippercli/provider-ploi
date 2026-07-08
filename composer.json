@@ -1,0 +1,20 @@
+{
+    "name": "shippercli/provider-ploi",
+    "description": "Ploi provider plugin for Shipper CLI",
+    "type": "shipper-plugin",
+    "license": "MIT",
+    "require": {
+        "php": "^8.3",
+        "shippercli/contracts": "^1.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "ShipperCli\\ProviderPloi\\": "src/"
+        }
+    },
+    "extra": {
+        "shipper-plugin": "ShipperCli\\ProviderPloi\\PloiPlugin"
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
