@@ -6,8 +6,9 @@ namespace ShipperCli\ProviderPloi;
 
 use Ploi\Ploi;
 use ShipperCli\Contracts\DeploymentProviderInterface;
+use ShipperCli\Contracts\ProviderCapabilitiesInterface;
 
-class PloiProvider implements DeploymentProviderInterface
+class PloiProvider implements DeploymentProviderInterface, ProviderCapabilitiesInterface
 {
     private const MANAGED_SERVER_PREFIX = 'shipper';
 
@@ -31,6 +32,23 @@ class PloiProvider implements DeploymentProviderInterface
     public function getName(): string
     {
         return 'ploi';
+    }
+
+    public function capabilities(): array
+    {
+        return [
+            'app_deploy' => ['state' => 'supported'],
+            'server_lifecycle' => ['state' => 'partial', 'notes' => 'Server creation and ownership-safe cleanup follow the Ploi API structure and require live account verification.'],
+            'domain_management' => ['state' => 'supported'],
+            'ssl' => ['state' => 'supported'],
+            'databases' => ['state' => 'supported'],
+            'profiles' => ['state' => 'supported'],
+            'background_workloads' => ['state' => 'partial'],
+            'env' => ['state' => 'supported'],
+            'observability' => ['state' => 'partial'],
+            'rollback' => ['state' => 'unsupported'],
+            'previews' => ['state' => 'partial'],
+        ];
     }
 
     public function validate(object $project, object $profile): array

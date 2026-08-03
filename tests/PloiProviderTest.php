@@ -7,6 +7,19 @@ use Ploi\Http\Response;
 use Ploi\Ploi;
 use Ploi\Resources\Server;
 use ShipperCli\ProviderPloi\PloiProvider;
+use ShipperCli\ProviderPloi\PloiPlugin;
+
+test('plugin exposes the ploi provider mapping', function (): void {
+    expect((new PloiPlugin)->providers())->toBe(['ploi' => PloiProvider::class]);
+});
+
+test('provider declares capability states explicitly', function (): void {
+    $capabilities = (new PloiProvider)->capabilities();
+
+    expect($capabilities['app_deploy']['state'])->toBe('supported')
+        ->and($capabilities['server_lifecycle']['state'])->toBe('partial')
+        ->and($capabilities['rollback']['state'])->toBe('unsupported');
+});
 
 function makePluginProject(): object
 {

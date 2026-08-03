@@ -8,13 +8,8 @@ use ShipperCli\Contracts\ShipperPluginInterface;
 
 final class PloiPlugin implements ShipperPluginInterface
 {
-    /**
-     * @return array<class-string, class-string>
-     */
     public function providers(): array
     {
-        return [
-            PloiProvider::class,
-        ];
+        return ['ploi' => PloiProvider::class];
     }
 }

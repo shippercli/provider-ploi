@@ -7,13 +7,15 @@
   "statusNote": "Currently in early testing. Some features may not work as expected on all Ploi instances.",
   "description": "Manage servers and deployments through the Ploi API. Ideal for developers who want a managed server control panel with a clean UI.",
   "features": [
+    "Application Deployment",
     "Server Lifecycle",
     "Site Management",
     "SSL Certificates",
     "Database Management",
     "Queue Workers",
     "Cron Jobs",
-    "Environment Variables"
+    "Environment Variables",
+    "Safe Cleanup"
   ],
   "config": {
     "provider": "ploi",

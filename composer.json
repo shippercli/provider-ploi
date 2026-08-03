@@ -5,7 +5,8 @@
     "license": "MIT",
     "require": {
         "php": "^8.3",
-        "ploi/ploi-php-sdk": "^1.9"
+        "ploi/ploi-php-sdk": "^1.9",
+        "shippercli/contracts": "^1.1"
     },
     "require-dev": {
         "mockery/mockery": "^1.6",
@@ -13,8 +14,7 @@
     },
     "autoload": {
         "psr-4": {
-            "ShipperCli\\ProviderPloi\\": "src/",
-            "ShipperCli\\Contracts\\": "src/Contracts/"
+            "ShipperCli\\ProviderPloi\\": "src/"
         }
     },
     "autoload-dev": {
