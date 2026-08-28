@@ -15,6 +15,15 @@ Current scope includes:
 Rollback is not currently supported by Ploi and is reported as unavailable by
 `shipper rollback`.
 
+Queues, cron jobs, daemons, network rules, redirects, `php_version`, and
+`nginx_config` are not yet applied by this provider. Validation rejects a
+project that configures any of these fields instead of silently ignoring them.
+
+Ploi accepts `site_id` when a database is created but does not publish an API
+operation for attaching an already-existing database to a different site. If a
+configured database exists without the current site association, apply fails
+closed instead of deploying with an unusable database.
+
 This repository also contains the provider metadata and logo used by the Shipper website provider catalog.
 
 ## Installation

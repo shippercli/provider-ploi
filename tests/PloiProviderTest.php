@@ -5,7 +5,12 @@ declare(strict_types=1);
 use Mockery as m;
 use Ploi\Http\Response;
 use Ploi\Ploi;
+use Ploi\Resources\Alias;
+use Ploi\Resources\Certificate;
 use Ploi\Resources\Database;
+use Ploi\Resources\Deployment;
+use Ploi\Resources\Environment;
+use Ploi\Resources\Repository;
 use Ploi\Resources\Server;
 use Ploi\Resources\Site;
 use ShipperCli\ProviderPloi\PloiProvider;
@@ -697,4 +702,396 @@ test('create-mode retain cleanup deletes the profile site but retains the server
             'plan' => 'small',
         ], 'retain')),
     ))->toBeTrue();
+});
+
+test('existing-site apply refreshes repository and configures before deploy', function (): void {
+    $operations = [];
+    $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
+    $lifecycleClient->shouldReceive('get')->with(123)->once()->andReturn((object) ['id' => 123, 'status' => 'active']);
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $siteCollection = m::mock(Site::class);
+    $site = m::mock(Site::class);
+    $repository = m::mock(Repository::class);
+    $deployment = m::mock(Deployment::class);
+    $installResponse = m::mock(Response::class);
+    $deployResponse = m::mock(Response::class);
+    $siteListResponse = m::mock(Response::class);
+    $siteStatusResponse = m::mock(Response::class);
+    $siteListResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $siteStatusResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => (object) ['deploying' => false, 'status' => 'deployed'],
+    ]);
+    $siteCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($siteListResponse);
+    $repository->shouldReceive('install')->with('github', 'feature/test', 'ulties/shipper')->once()
+        ->andReturnUsing(function () use (&$operations, $installResponse): Response {
+            $operations[] = 'repository';
+
+            return $installResponse;
+        });
+    $deployment->shouldReceive('deploy')->once()->andReturnUsing(function () use (&$operations, $deployResponse): Response {
+        $operations[] = 'deploy';
+
+        return $deployResponse;
+    });
+    $site->shouldReceive('repository')->once()->andReturn($repository);
+    $site->shouldReceive('deployment')->once()->andReturn($deployment);
+    $site->shouldReceive('get')->once()->andReturn($siteStatusResponse);
+    $server->shouldReceive('sites')->withNoArgs()->once()->andReturn($siteCollection);
+    $server->shouldReceive('sites')->with(55)->times(3)->andReturn($site);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+    $provider = new class($client, $lifecycleClient, $operations) extends PloiProvider
+    {
+        /** @var array<int, string> */
+        public array $operations;
+
+        /** @param array<int, string> $operations */
+        public function __construct(
+            private readonly Ploi $fakeClient,
+            ServerLifecycleClientInterface $lifecycleClient,
+            array &$operations,
+        ) {
+            $this->operations = &$operations;
+            parent::__construct([
+                'api_key' => 'token',
+                'server_id' => '123',
+                'deployment_timeout' => 1,
+            ], $lifecycleClient);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        protected function applyAliases(object $profile): array
+        {
+            $this->operations[] = 'aliases';
+
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applyDeployScript(object $project, object $profile): array
+        {
+            $this->operations[] = 'deploy-script';
+
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applyEnvironment(object $project, object $profile): array
+        {
+            $this->operations[] = 'environment';
+
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applySsl(object $project, object $profile): array
+        {
+            $this->operations[] = 'ssl';
+
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function deploymentLogs(int $serverId, int $siteId): array
+        {
+            return ['old deployment failed'];
+        }
+    };
+
+    $result = $provider->apply(makePluginProject(), makePluginProfile());
+
+    expect($provider->getLastError())->toBe('')
+        ->and($result)->toBeTrue()
+        ->and($operations)->toBe(['repository', 'aliases', 'deploy-script', 'environment', 'ssl', 'deploy']);
+});
+
+test('create-mode readiness waits until the server becomes active', function (): void {
+    $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
+    $lifecycleClient->shouldReceive('get')->with(654)->twice()->andReturn(
+        (object) ['id' => 654, 'status' => 'provisioning'],
+        (object) ['id' => 654, 'status' => 'active'],
+    );
+    $provider = new class($lifecycleClient) extends PloiProvider
+    {
+        public function __construct(ServerLifecycleClientInterface $lifecycleClient)
+        {
+            parent::__construct([
+                'api_key' => 'token',
+                'deployment_timeout' => 2,
+                'server_ready_poll_interval' => 0,
+            ], $lifecycleClient);
+        }
+
+        public function waitUntilReady(int $serverId): void
+        {
+            $this->waitForServerReady($serverId);
+        }
+    };
+
+    $provider->waitUntilReady(654);
+    expect(true)->toBeTrue();
+});
+
+test('generated database credentials are merged into the site environment', function (): void {
+    $capturedEnvironment = '';
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $site = m::mock(Site::class);
+    $environment = m::mock(Environment::class);
+    $getResponse = m::mock(Response::class);
+    $updateResponse = m::mock(Response::class);
+    $getResponse->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['content' => 'APP_ENV=production']]);
+    $environment->shouldReceive('get')->once()->andReturn($getResponse);
+    $environment->shouldReceive('update')->once()->andReturnUsing(function (string $content) use (&$capturedEnvironment, $updateResponse): Response {
+        $capturedEnvironment = $content;
+
+        return $updateResponse;
+    });
+    $site->shouldReceive('environment')->once()->andReturn($environment);
+    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        public function applyGeneratedEnvironment(object $project, object $profile): array
+        {
+            return $this->applyEnvironment($project, $profile);
+        }
+    };
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 55);
+    (new ReflectionProperty(PloiProvider::class, 'generatedEnvironment'))->setValue($provider, [
+        'DB_DATABASE' => 'api_preview',
+        'DB_USERNAME' => 'api',
+        'DB_PASSWORD' => 'generated-secret',
+    ]);
+    $emptyEnvironment = new class
+    {
+        public function mergeWith(object $other): object
+        {
+            return $this;
+        }
+
+        public function variables(): array
+        {
+            return [];
+        }
+    };
+    $project = new class($emptyEnvironment)
+    {
+        public function __construct(private readonly object $environment) {}
+
+        public function environment(): object
+        {
+            return $this->environment;
+        }
+    };
+    $profile = new class($emptyEnvironment)
+    {
+        public function __construct(private readonly object $environment) {}
+
+        public function environment(): object
+        {
+            return $this->environment;
+        }
+    };
+
+    expect($provider->applyGeneratedEnvironment($project, $profile)['success'])->toBeTrue()
+        ->and($capturedEnvironment)->toContain('DB_DATABASE=api_preview')
+        ->and($capturedEnvironment)->toContain('DB_USERNAME=api')
+        ->and($capturedEnvironment)->toContain('DB_PASSWORD=generated-secret');
+});
+
+test('validation rejects parsed resources that Ploi does not apply', function (): void {
+    $project = new class
+    {
+        public function repository(): array
+        {
+            return ['provider' => 'github', 'name' => 'shippercli/cli'];
+        }
+
+        public function cron(): array
+        {
+            return [new stdClass];
+        }
+
+        public function phpVersion(): string
+        {
+            return '8.4';
+        }
+    };
+    $provider = new PloiProvider(['api_key' => 'token', 'server_id' => '123']);
+
+    expect($provider->validate($project, makePluginProfile()))
+        ->toContain('Ploi provider does not yet support configured cron jobs')
+        ->toContain('Ploi provider does not yet support configured php_version');
+});
+
+test('post-apply creates only missing aliases and passes force https to SSL', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $site = m::mock(Site::class);
+    $alias = m::mock(Alias::class);
+    $certificate = m::mock(Certificate::class);
+    $aliasResponse = m::mock(Response::class);
+    $aliasCreateResponse = m::mock(Response::class);
+    $certificateResponse = m::mock(Response::class);
+    $certificateCreateResponse = m::mock(Response::class);
+    $aliasResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [(object) ['domain' => 'www.example.com']],
+    ]);
+    $certificateResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $alias->shouldReceive('get')->once()->andReturn($aliasResponse);
+    $alias->shouldReceive('create')->with(['api.example.com'])->once()->andReturn($aliasCreateResponse);
+    $certificate->shouldReceive('page')->with(1, 50)->once()->andReturn($certificateResponse);
+    $certificate->shouldReceive('create')->with('preview.example.com', 'letsencrypt', true)->once()->andReturn($certificateCreateResponse);
+    $site->shouldReceive('alias')->once()->andReturn($alias);
+    $site->shouldReceive('certificates')->once()->andReturn($certificate);
+    $server->shouldReceive('sites')->with(55)->twice()->andReturn($site);
+    $client->shouldReceive('server')->with(123)->twice()->andReturn($server);
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        public function configureAliases(object $profile): array
+        {
+            return $this->applyAliases($profile);
+        }
+
+        public function configureSsl(object $project, object $profile): array
+        {
+            return $this->applySsl($project, $profile);
+        }
+    };
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 55);
+    $profile = new class
+    {
+        public function aliases(): array
+        {
+            return ['www.example.com', 'api.example.com'];
+        }
+
+        public function get(string $key): mixed
+        {
+            return $key === 'domain' ? 'preview.example.com' : null;
+        }
+    };
+    $project = new class
+    {
+        public function ssl(): object
+        {
+            return new class
+            {
+                public function enabled(): bool
+                {
+                    return true;
+                }
+
+                public function type(): string
+                {
+                    return 'letsencrypt';
+                }
+
+                public function forceHttps(): bool
+                {
+                    return true;
+                }
+            };
+        }
+    };
+
+    expect($provider->configureAliases($profile)['success'])->toBeTrue()
+        ->and($provider->configureSsl($project, $profile)['success'])->toBeTrue();
+});
+
+test('post-apply skips SSL create when the domain already has a certificate', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $site = m::mock(Site::class);
+    $certificate = m::mock(Certificate::class);
+    $response = m::mock(Response::class);
+    $response->shouldReceive('getJson')->andReturn((object) [
+        'data' => [(object) ['id' => 7, 'domain' => 'preview.example.com']],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $certificate->shouldReceive('page')->with(1, 50)->once()->andReturn($response);
+    $certificate->shouldNotReceive('create');
+    $site->shouldReceive('certificates')->once()->andReturn($certificate);
+    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        public function configureSsl(object $project, object $profile): array
+        {
+            return $this->applySsl($project, $profile);
+        }
+    };
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 55);
+    $profile = new class
+    {
+        public function get(string $key): mixed
+        {
+            return $key === 'domain' ? 'preview.example.com' : null;
+        }
+    };
+    $project = new class
+    {
+        public function ssl(): object
+        {
+            return new class
+            {
+                public function enabled(): bool
+                {
+                    return true;
+                }
+
+                public function type(): string
+                {
+                    return 'letsencrypt';
+                }
+
+                public function forceHttps(): bool
+                {
+                    return false;
+                }
+            };
+        }
+    };
+
+    expect($provider->configureSsl($project, $profile)['success'])->toBeTrue();
 });

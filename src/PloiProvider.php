@@ -31,6 +31,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
     private int $lastSiteId = 0;
 
+    /** @var array<string, string> */
+    private array $generatedEnvironment = [];
+
+    private bool $configurationApplied = false;
+
     /** @param array<string, mixed> $config */
     public function __construct(array $config = [], ?ServerLifecycleClientInterface $serverLifecycleClient = null)
     {
@@ -95,6 +100,30 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $repoName = $repository['name'] ?? null;
         if (! \is_string($repoName) || $repoName === '') {
             $errors[] = 'Repository name is required';
+        }
+
+        $unsupported = [
+            'queues' => 'queues',
+            'cron' => 'cron jobs',
+            'daemons' => 'daemons',
+            'networkRules' => 'network rules',
+            'redirects' => 'redirects',
+        ];
+        foreach ($unsupported as $accessor => $label) {
+            $value = \method_exists($project, $accessor) ? $project->{$accessor}() : [];
+            if (\is_array($value) && $value !== []) {
+                $errors[] = "Ploi provider does not yet support configured {$label}";
+            }
+        }
+
+        $phpVersion = \method_exists($project, 'phpVersion') ? $project->phpVersion() : '';
+        if (\is_string($phpVersion) && $phpVersion !== '') {
+            $errors[] = 'Ploi provider does not yet support configured php_version';
+        }
+
+        $nginxConfig = \method_exists($project, 'nginxConfig') ? $project->nginxConfig() : '';
+        if (\is_string($nginxConfig) && $nginxConfig !== '') {
+            $errors[] = 'Ploi provider does not yet support configured nginx_config';
         }
 
         return $errors;
@@ -172,10 +201,16 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     public function apply(object $project, object $profile): bool
     {
         $this->lastError = '';
+        $this->generatedEnvironment = [];
+        $this->configurationApplied = false;
         $serverId = 0;
 
         try {
             $serverId = $this->resolveServerIdForProfile($project, $profile, true);
+            $serverLifecycle = $this->extractServerLifecycle($profile);
+            if (($serverLifecycle['mode'] ?? null) === 'create') {
+                $this->waitForServerReady($serverId);
+            }
             $domain = $this->profileValue($profile, 'domain');
 
             if (! \is_string($domain) || $domain === '') {
@@ -214,7 +249,6 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
                 $siteId = (int) $responseData->id;
                 $site = $server->sites($siteId);
-                $site->repository()->install($repoProvider, $branch, $repoName);
             } else {
                 if (! \property_exists($existingSite, 'id')) {
                     $this->lastError = 'Existing site found but has no ID';
@@ -224,6 +258,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
                 $siteId = (int) $existingSite->id;
             }
+
+            $server->sites($siteId)->repository()->install($repoProvider, $branch, $repoName);
 
             $this->lastServerId = $serverId;
             $this->lastSiteId = $siteId;
@@ -244,14 +280,36 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
                 foreach ($this->paginatedData($server->databases()) as $db) {
                     if (\property_exists($db, 'name') && $db->name === $dbName) {
+                        $linkedSite = $db->site ?? null;
+                        if (! \is_object($linkedSite) || ! \property_exists($linkedSite, 'id') || (int) $linkedSite->id !== $siteId) {
+                            $this->lastError = "Existing Ploi database {$dbName} is not attached to site {$siteId}; the Ploi API only accepts site_id when creating a database";
+
+                            return false;
+                        }
+
                         $exists = true;
                         break;
                     }
                 }
 
                 if (! $exists) {
-                    $server->databases()->create($dbName, $dbUser, $this->generateDatabasePassword(), null, $siteId);
+                    $password = $this->generateDatabasePassword();
+                    $server->databases()->create($dbName, $dbUser, $password, null, $siteId);
+                    if ($this->generatedEnvironment === []) {
+                        $this->generatedEnvironment = [
+                            'DB_DATABASE' => $dbName,
+                            'DB_USERNAME' => $dbUser,
+                            'DB_PASSWORD' => $password,
+                        ];
+                    }
                 }
+            }
+
+            $configuration = $this->postApply($project, $profile);
+            if (! $configuration['success']) {
+                $this->lastError = $configuration['message'];
+
+                return false;
             }
 
             $site = $server->sites($siteId);
@@ -289,22 +347,6 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                     }
 
                     return false;
-                }
-
-                \sleep(self::LOG_FETCH_DELAY_SECONDS);
-                foreach ($this->getDeploymentLogs($serverId, $siteId) as $log) {
-                    $logLower = \strtolower($log);
-                    if (
-                        \str_contains($logLower, 'deployment failed') ||
-                        \str_contains($logLower, 'deployment failure') ||
-                        \str_contains($logLower, 'deploy failed') ||
-                        \str_contains($logLower, 'fatal error') ||
-                        \str_contains($logLower, 'critical error')
-                    ) {
-                        $this->lastError = 'Deployment failed on Ploi server (detected in logs)';
-
-                        return false;
-                    }
                 }
 
                 return true;
@@ -442,6 +484,14 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             return ['success' => false, 'message' => 'Ploi deployment target is unavailable for post-apply configuration', 'logs' => []];
         }
 
+        if ($this->configurationApplied) {
+            return [
+                'success' => true,
+                'message' => 'Ploi post-apply configuration completed',
+                'logs' => $this->deploymentLogs($this->lastServerId, $this->lastSiteId),
+            ];
+        }
+
         $operations = [
             $this->applyAliases($profile),
             $this->applyDeployScript($project, $profile),
@@ -460,6 +510,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 ];
             }
         }
+
+        $this->configurationApplied = true;
 
         return [
             'success' => true,
@@ -505,7 +557,20 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         try {
-            $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->alias()->create($aliases);
+            $aliasResource = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->alias();
+            $data = $aliasResource->get()->getJson()->data ?? [];
+            $existing = [];
+            foreach (\is_array($data) ? $data : [] as $alias) {
+                if (\is_string($alias)) {
+                    $existing[] = $alias;
+                } elseif (\is_object($alias) && \property_exists($alias, 'domain')) {
+                    $existing[] = (string) $alias->domain;
+                }
+            }
+            $missing = \array_values(\array_diff(\array_filter($aliases, '\is_string'), $existing));
+            if ($missing !== []) {
+                $aliasResource->create($missing);
+            }
 
             return ['success' => true, 'message' => 'Aliases configured successfully'];
         } catch (\Throwable $exception) {
@@ -545,6 +610,9 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
         $merged = $projectEnvironment->mergeWith($profileEnvironment);
         $variables = \is_object($merged) && \method_exists($merged, 'variables') ? $merged->variables() : [];
+        if (\is_array($variables)) {
+            $variables = [...$variables, ...$this->generatedEnvironment];
+        }
         if (! \is_array($variables) || $variables === []) {
             return ['success' => true, 'message' => 'No environment variables to configure'];
         }
@@ -569,13 +637,22 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         $type = \method_exists($ssl, 'type') ? $ssl->type() : 'letsencrypt';
+        $forceHttps = \method_exists($ssl, 'forceHttps') && $ssl->forceHttps();
 
         try {
-            $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->certificates()->create(
-                $this->profileDomain($profile),
-                \is_string($type) ? $type : 'letsencrypt',
-                false,
-            );
+            $domain = $this->profileDomain($profile);
+            $certificates = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->certificates();
+            $exists = false;
+            foreach ($this->paginatedData($certificates) as $certificate) {
+                $certificateDomain = $certificate->domain ?? ($certificate->certificate ?? null);
+                if (\is_string($certificateDomain) && $certificateDomain === $domain) {
+                    $exists = true;
+                    break;
+                }
+            }
+            if (! $exists) {
+                $certificates->create($domain, \is_string($type) ? $type : 'letsencrypt', $forceHttps);
+            }
 
             return ['success' => true, 'message' => 'SSL certificate created successfully'];
         } catch (\Throwable $exception) {
@@ -943,6 +1020,38 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $slug = \trim($slug, '-');
 
         return $slug !== '' ? $slug : 'unnamed';
+    }
+
+    protected function waitForServerReady(int $serverId): void
+    {
+        $timeout = $this->getDeploymentTimeout();
+        $pollInterval = $this->config['server_ready_poll_interval'] ?? 5;
+        $pollInterval = \is_numeric($pollInterval) ? \max(0, (int) $pollInterval) : 5;
+        $elapsed = 0;
+
+        while ($elapsed <= $timeout) {
+            $server = $this->getServerLifecycleClient()->get($serverId);
+            $status = $server->status ?? ($server->server_status ?? null);
+            if ((\is_string($status) && \in_array(\strtolower($status), ['active', 'ready', 'installed'], true))
+                || ($server->installed ?? false) === true) {
+                return;
+            }
+
+            if (\is_string($status) && \in_array(\strtolower($status), ['failed', 'error'], true)) {
+                throw new \RuntimeException("Ploi server {$serverId} provisioning failed with status: {$status}");
+            }
+
+            if ($elapsed >= $timeout) {
+                break;
+            }
+
+            if ($pollInterval > 0) {
+                \sleep($pollInterval);
+            }
+            $elapsed += \max(1, $pollInterval);
+        }
+
+        throw new \RuntimeException("Ploi server {$serverId} did not become ready within {$timeout} seconds");
     }
 
     private function getDeploymentTimeout(): int
