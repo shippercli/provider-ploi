@@ -433,3 +433,56 @@ test('provider package refuses deleting unmanaged created server', function (): 
     expect($result)->toBeFalse();
     expect($provider->getLastError())->toBe('Refusing to delete unmanaged server: api-pr-777');
 });
+
+test('provider package runs post-apply capabilities without relying on the core Ploi class', function (): void {
+    $provider = new class extends PloiProvider
+    {
+        /** @var array<int, string> */
+        public array $operations = [];
+
+        protected function applyAliases(object $profile): array
+        {
+            $this->operations[] = 'aliases';
+
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applyDeployScript(object $project, object $profile): array
+        {
+            $this->operations[] = 'deploy-script';
+
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applyEnvironment(object $project, object $profile): array
+        {
+            $this->operations[] = 'environment';
+
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applySsl(object $project, object $profile): array
+        {
+            $this->operations[] = 'ssl';
+
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function deploymentLogs(int $serverId, int $siteId): array
+        {
+            return ['deployment complete'];
+        }
+    };
+    $serverId = new ReflectionProperty(PloiProvider::class, 'lastServerId');
+    $serverId->setValue($provider, 123);
+    $siteId = new ReflectionProperty(PloiProvider::class, 'lastSiteId');
+    $siteId->setValue($provider, 456);
+
+    $result = $provider->postApply(makePluginProject(), makePluginProfile());
+
+    expect($result)->toBe([
+        'success' => true,
+        'message' => 'Ploi post-apply configuration completed',
+        'logs' => ['deployment complete'],
+    ])->and($provider->operations)->toBe(['aliases', 'deploy-script', 'environment', 'ssl']);
+});
