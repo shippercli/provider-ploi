@@ -191,15 +191,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $repoProvider = \is_string($repository['provider'] ?? null) ? $repository['provider'] : '';
             $repoName = \is_string($repository['name'] ?? null) ? $repository['name'] : '';
 
-            $sites = $server->sites()->get();
             $existingSite = null;
-            $siteData = $sites->getJson()->data ?? null;
-            if (\is_array($siteData)) {
-                foreach ($siteData as $site) {
-                    if (\is_object($site) && \property_exists($site, 'domain') && $site->domain === $domain) {
-                        $existingSite = $site;
-                        break;
-                    }
+            foreach ($this->paginatedData($server->sites()) as $site) {
+                if (\property_exists($site, 'domain') && $site->domain === $domain) {
+                    $existingSite = $site;
+                    break;
                 }
             }
 
@@ -244,16 +240,12 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                     $this->profileName($profile),
                 );
 
-                $existingDatabases = $server->databases()->get();
-                $dbData = $existingDatabases->getJson()->data ?? null;
                 $exists = false;
 
-                if (\is_array($dbData)) {
-                    foreach ($dbData as $db) {
-                        if (\is_object($db) && \property_exists($db, 'name') && $db->name === $dbName) {
-                            $exists = true;
-                            break;
-                        }
+                foreach ($this->paginatedData($server->databases()) as $db) {
+                    if (\property_exists($db, 'name') && $db->name === $dbName) {
+                        $exists = true;
+                        break;
                     }
                 }
 
@@ -335,6 +327,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         try {
             $serverConfig = $this->extractServerLifecycle($profile);
             if ($serverConfig !== null && ($serverConfig['mode'] ?? null) === 'create') {
+                $serverId = $this->resolveServerIdForProfile($project, $profile);
+                if ($serverId > 0 && ! $this->deleteProfileSiteAndDatabases($project, $profile, $serverId)) {
+                    return false;
+                }
+
                 return $this->destroyCreatedServer($project, $profile, $serverConfig);
             }
 
@@ -346,15 +343,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 return false;
             }
 
-            $sites = $server->sites()->get();
             $existingSite = null;
-            $siteData = $sites->getJson()->data ?? null;
-            if (\is_array($siteData)) {
-                foreach ($siteData as $site) {
-                    if (\is_object($site) && \property_exists($site, 'domain') && $site->domain === $domain) {
-                        $existingSite = $site;
-                        break;
-                    }
+            foreach ($this->paginatedData($server->sites()) as $site) {
+                if (\property_exists($site, 'domain') && $site->domain === $domain) {
+                    $existingSite = $site;
+                    break;
                 }
             }
 
@@ -375,17 +368,16 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                     $this->projectName($project),
                     $this->profileName($profile),
                 );
-                $dbData = $server->databases()->get()->getJson()->data ?? null;
+                foreach ($this->paginatedData($server->databases()) as $db) {
+                    if (\property_exists($db, 'name') && $db->name === $dbName && \property_exists($db, 'id')) {
+                        try {
+                            $server->databases((int) $db->id)->delete();
+                        } catch (\Throwable $exception) {
+                            $this->lastError = "Failed to delete database {$dbName}: ".$exception->getMessage();
 
-                if (\is_array($dbData)) {
-                    foreach ($dbData as $db) {
-                        if (\is_object($db) && \property_exists($db, 'name') && $db->name === $dbName && \property_exists($db, 'id')) {
-                            try {
-                                $server->databases((int) $db->id)->delete();
-                            } catch (\Throwable) {
-                            }
-                            break;
+                            return false;
                         }
+                        break;
                     }
                 }
             }
@@ -412,6 +404,31 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     public function getLastError(): string
     {
         return $this->lastError;
+    }
+
+    /** @return array<int, array{site_id: int, domain: string}> */
+    public function listSites(object $project, object $profile): array
+    {
+        $serverId = $this->resolveServerIdForProfile($project, $profile);
+        if ($serverId <= 0) {
+            return [];
+        }
+
+        $sites = [];
+        foreach ($this->paginatedData($this->getClient()->server($serverId)->sites()) as $site) {
+            if (\property_exists($site, 'id') && \property_exists($site, 'domain')) {
+                $sites[] = ['site_id' => (int) $site->id, 'domain' => (string) $site->domain];
+            }
+        }
+
+        return $sites;
+    }
+
+    public function deleteSiteWithDatabases(object $project, object $profile, int $siteId): bool
+    {
+        $serverId = $this->resolveServerIdForProfile($project, $profile);
+
+        return $serverId > 0 && $this->deleteSiteAndDatabases($project, $profile, $serverId, $siteId);
     }
 
     /**
@@ -799,6 +816,95 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         return true;
+    }
+
+    private function deleteProfileSiteAndDatabases(object $project, object $profile, int $serverId): bool
+    {
+        $domain = $this->profileDomain($profile);
+        foreach ($this->paginatedData($this->getClient()->server($serverId)->sites()) as $site) {
+            if (\property_exists($site, 'domain') && $site->domain === $domain && \property_exists($site, 'id')) {
+                return $this->deleteSiteAndDatabases($project, $profile, $serverId, (int) $site->id);
+            }
+        }
+
+        return true;
+    }
+
+    private function deleteSiteAndDatabases(object $project, object $profile, int $serverId, int $siteId): bool
+    {
+        $server = $this->getClient()->server($serverId);
+        $databaseErrors = [];
+        $databases = $this->paginatedData($server->databases());
+
+        foreach ($this->projectDatabases($project) as $database) {
+            $dbName = $this->interpolateDatabaseName(
+                $this->databaseValue($database, 'name'),
+                $this->projectName($project),
+                $this->profileName($profile),
+            );
+
+            foreach ($databases as $existingDatabase) {
+                if (! \property_exists($existingDatabase, 'name') || $existingDatabase->name !== $dbName || ! \property_exists($existingDatabase, 'id')) {
+                    continue;
+                }
+
+                try {
+                    $server->databases((int) $existingDatabase->id)->delete();
+                } catch (\Throwable $exception) {
+                    $databaseErrors[] = "Failed to delete database {$dbName}: ".$exception->getMessage();
+                }
+                break;
+            }
+        }
+
+        try {
+            $response = $server->sites($siteId)->delete();
+            $message = $response->getJson()->message ?? null;
+            if (\is_string($message) && (\str_contains(\strtolower($message), 'error') || \str_contains(\strtolower($message), 'failed'))) {
+                $databaseErrors[] = 'Failed to delete site: '.$message;
+            }
+        } catch (\Throwable $exception) {
+            $databaseErrors[] = "Failed to delete site {$siteId}: ".$exception->getMessage();
+        }
+
+        if ($databaseErrors !== []) {
+            $this->lastError = \implode("\n", $databaseErrors);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /** @return array<int, object> */
+    private function paginatedData(object $resource): array
+    {
+        if (! \method_exists($resource, 'page')) {
+            throw new \RuntimeException('Ploi resource does not support pagination');
+        }
+
+        $items = [];
+        $page = 1;
+        do {
+            $response = $resource->page($page, 50);
+            if (! \is_object($response) || ! \method_exists($response, 'getJson')) {
+                throw new \RuntimeException('Ploi returned an invalid paginated response');
+            }
+
+            $json = $response->getJson();
+            $data = $json->data ?? null;
+            if (! \is_array($data)) {
+                throw new \RuntimeException('Ploi returned invalid paginated resource data');
+            }
+
+            $items = [...$items, ...\array_values(\array_filter($data, \is_object(...)))];
+            $lastPage = isset($json->meta->last_page) && \is_numeric($json->meta->last_page)
+                ? (int) $json->meta->last_page
+                : $page;
+            $page++;
+        } while ($page <= $lastPage);
+
+        return $items;
     }
 
     private function getServerLifecycleClient(): ServerLifecycleClientInterface

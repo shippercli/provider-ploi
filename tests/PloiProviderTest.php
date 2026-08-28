@@ -5,7 +5,9 @@ declare(strict_types=1);
 use Mockery as m;
 use Ploi\Http\Response;
 use Ploi\Ploi;
+use Ploi\Resources\Database;
 use Ploi\Resources\Server;
+use Ploi\Resources\Site;
 use ShipperCli\ProviderPloi\PloiProvider;
 use ShipperCli\ProviderPloi\PloiPlugin;
 use ShipperCli\ProviderPloi\ServerLifecycleClientInterface;
@@ -174,16 +176,23 @@ test('provider package plan shows managed server lifecycle actions', function ()
 test('provider package resolves existing managed server by name', function (): void {
     $client = m::mock(Ploi::class);
     $serverResource = m::mock(Server::class);
-    $response = m::mock(Response::class);
+    $firstResponse = m::mock(Response::class);
+    $secondResponse = m::mock(Response::class);
 
-    $response->shouldReceive('getJson')->andReturn((object) [
+    $firstResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [],
+        'meta' => (object) ['last_page' => 2],
+    ]);
+    $secondResponse->shouldReceive('getJson')->andReturn((object) [
         'data' => [
             (object) ['id' => 321, 'name' => 'shipper-api-preview-api-pr-123'],
         ],
+        'meta' => (object) ['last_page' => 2],
     ]);
 
-    $serverResource->shouldReceive('get')->once()->andReturn($response);
-    $client->shouldReceive('server')->withNoArgs()->once()->andReturn($serverResource);
+    $serverResource->shouldReceive('page')->with(1, 50)->once()->andReturn($firstResponse);
+    $serverResource->shouldReceive('page')->with(2, 50)->once()->andReturn($secondResponse);
+    $client->shouldReceive('server')->withNoArgs()->twice()->andReturn($serverResource);
 
     $provider = new class($client) extends PloiProvider
     {
@@ -303,12 +312,15 @@ test('provider package creates managed server when missing', function (): void {
     $listResponse = m::mock(Response::class);
     $createResponse = m::mock(Response::class);
 
-    $listResponse->shouldReceive('getJson')->andReturn((object) ['data' => []]);
+    $listResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [],
+        'meta' => (object) ['last_page' => 1],
+    ]);
     $createResponse->shouldReceive('getJson')->andReturn((object) [
         'data' => (object) ['id' => 654],
     ]);
 
-    $serverResource->shouldReceive('get')->once()->andReturn($listResponse);
+    $serverResource->shouldReceive('page')->with(1, 50)->once()->andReturn($listResponse);
     $serverResource->shouldReceive('create')
         ->once()
         ->with('shipper-api-preview-api-pr-456', 42, 'eu-west', 'small', m::type('array'))
@@ -349,23 +361,45 @@ test('provider package deletes managed created server on destroy cleanup', funct
     $client = m::mock(Ploi::class);
     $listResource = m::mock(Server::class);
     $serverResource = m::mock(Server::class);
+    $siteCollection = m::mock(Site::class);
+    $siteResource = m::mock(Site::class);
+    $databaseCollection = m::mock(Database::class);
     $listResponse = m::mock(Response::class);
+    $siteListResponse = m::mock(Response::class);
+    $databaseListResponse = m::mock(Response::class);
+    $siteDeleteResponse = m::mock(Response::class);
     $deleteResponse = m::mock(Response::class);
 
     $listResponse->shouldReceive('getJson')->andReturn((object) [
         'data' => [
             (object) ['id' => 999, 'name' => 'shipper-api-preview-api-pr-999'],
         ],
+        'meta' => (object) ['last_page' => 1],
     ]);
+    $siteListResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $databaseListResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $siteDeleteResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Site deleted']);
     $deleteResponse->shouldReceive('getJson')->andReturn((object) [
         'message' => 'Server deleted successfully',
     ]);
 
-    $listResource->shouldReceive('get')->once()->andReturn($listResponse);
+    $listResource->shouldReceive('page')->with(1, 50)->twice()->andReturn($listResponse);
+    $siteCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($siteListResponse);
+    $databaseCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($databaseListResponse);
+    $siteResource->shouldReceive('delete')->once()->andReturn($siteDeleteResponse);
+    $serverResource->shouldReceive('sites')->withNoArgs()->once()->andReturn($siteCollection);
+    $serverResource->shouldReceive('databases')->withNoArgs()->once()->andReturn($databaseCollection);
+    $serverResource->shouldReceive('sites')->with(55)->once()->andReturn($siteResource);
     $serverResource->shouldReceive('delete')->once()->andReturn($deleteResponse);
 
-    $client->shouldReceive('server')->withNoArgs()->once()->andReturn($listResource);
-    $client->shouldReceive('server')->with(999)->once()->andReturn($serverResource);
+    $client->shouldReceive('server')->withNoArgs()->twice()->andReturn($listResource);
+    $client->shouldReceive('server')->with(999)->times(3)->andReturn($serverResource);
 
     $provider = new class($client) extends PloiProvider
     {
@@ -404,8 +438,15 @@ test('provider package refuses deleting unmanaged created server', function (): 
         ],
     ]);
 
-    $listResource->shouldReceive('get')->twice()->andReturn($listResponse);
-    $client->shouldReceive('server')->withNoArgs()->twice()->andReturn($listResource);
+    $listResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [
+            (object) ['id' => 777, 'name' => 'api-pr-777'],
+        ],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+
+    $listResource->shouldReceive('page')->with(1, 50)->times(3)->andReturn($listResponse);
+    $client->shouldReceive('server')->withNoArgs()->times(3)->andReturn($listResource);
 
     $provider = new class($client) extends PloiProvider
     {
@@ -485,4 +526,175 @@ test('provider package runs post-apply capabilities without relying on the core 
         'message' => 'Ploi post-apply configuration completed',
         'logs' => ['deployment complete'],
     ])->and($provider->operations)->toBe(['aliases', 'deploy-script', 'environment', 'ssl']);
+});
+
+test('provider package lists sites across every page', function (): void {
+    $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
+    $lifecycleClient->shouldReceive('get')->with(123)->once()->andReturn((object) ['id' => 123]);
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $sites = m::mock(Site::class);
+    $firstResponse = m::mock(Response::class);
+    $secondResponse = m::mock(Response::class);
+    $firstResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [],
+        'meta' => (object) ['last_page' => 2],
+    ]);
+    $secondResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']],
+        'meta' => (object) ['last_page' => 2],
+    ]);
+    $sites->shouldReceive('page')->with(1, 50)->once()->andReturn($firstResponse);
+    $sites->shouldReceive('page')->with(2, 50)->once()->andReturn($secondResponse);
+    $server->shouldReceive('sites')->withNoArgs()->once()->andReturn($sites);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+    $provider = new class($client, $lifecycleClient) extends PloiProvider
+    {
+        public function __construct(
+            private readonly Ploi $fakeClient,
+            ServerLifecycleClientInterface $lifecycleClient,
+        ) {
+            parent::__construct(['api_key' => 'token', 'server_id' => '123'], $lifecycleClient);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+    };
+
+    expect($provider->listSites(makePluginProject(), makePluginProfile()))->toBe([
+        ['site_id' => 55, 'domain' => 'preview.example.com'],
+    ]);
+});
+
+test('database deletion failure is reported after site deletion is attempted', function (): void {
+    $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
+    $lifecycleClient->shouldReceive('get')->with(123)->once()->andReturn((object) ['id' => 123]);
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $database = m::mock(Database::class);
+    $site = m::mock(Site::class);
+    $firstResponse = m::mock(Response::class);
+    $secondResponse = m::mock(Response::class);
+    $siteDeleteResponse = m::mock(Response::class);
+    $firstResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [],
+        'meta' => (object) ['last_page' => 2],
+    ]);
+    $secondResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [(object) ['id' => 9, 'name' => 'api_preview']],
+        'meta' => (object) ['last_page' => 2],
+    ]);
+    $siteDeleteResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Site deleted']);
+    $databases->shouldReceive('page')->with(1, 50)->once()->andReturn($firstResponse);
+    $databases->shouldReceive('page')->with(2, 50)->once()->andReturn($secondResponse);
+    $database->shouldReceive('delete')->once()->andThrow(new RuntimeException('permission denied'));
+    $site->shouldReceive('delete')->once()->andReturn($siteDeleteResponse);
+    $server->shouldReceive('databases')->withNoArgs()->once()->andReturn($databases);
+    $server->shouldReceive('databases')->with(9)->once()->andReturn($database);
+    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+    $provider = new class($client, $lifecycleClient) extends PloiProvider
+    {
+        public function __construct(
+            private readonly Ploi $fakeClient,
+            ServerLifecycleClientInterface $lifecycleClient,
+        ) {
+            parent::__construct(['api_key' => 'token', 'server_id' => '123'], $lifecycleClient);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+    };
+    $project = new class
+    {
+        public function name(): string
+        {
+            return 'api';
+        }
+
+        public function databases(): array
+        {
+            return [new class
+            {
+                public function name(): string
+                {
+                    return '${PROJECT_NAME}_${PROFILE}';
+                }
+
+                public function user(): string
+                {
+                    return 'api';
+                }
+
+                public function type(): string
+                {
+                    return 'mysql';
+                }
+            }];
+        }
+    };
+
+    expect($provider->deleteSiteWithDatabases($project, makePluginProfile(), 55))->toBeFalse()
+        ->and($provider->getLastError())->toContain('Failed to delete database api_preview: permission denied');
+});
+
+test('create-mode retain cleanup deletes the profile site but retains the server', function (): void {
+    $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
+    $lifecycleClient->shouldReceive('list')->once()->andReturn([
+        (object) ['id' => 999, 'name' => 'shipper-api-preview-api-pr-999'],
+    ]);
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $siteCollection = m::mock(Site::class);
+    $site = m::mock(Site::class);
+    $databaseCollection = m::mock(Database::class);
+    $siteListResponse = m::mock(Response::class);
+    $databaseListResponse = m::mock(Response::class);
+    $siteDeleteResponse = m::mock(Response::class);
+    $siteListResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $databaseListResponse->shouldReceive('getJson')->andReturn((object) [
+        'data' => [],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $siteDeleteResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Site deleted']);
+    $siteCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($siteListResponse);
+    $databaseCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($databaseListResponse);
+    $site->shouldReceive('delete')->once()->andReturn($siteDeleteResponse);
+    $server->shouldReceive('sites')->withNoArgs()->once()->andReturn($siteCollection);
+    $server->shouldReceive('databases')->withNoArgs()->once()->andReturn($databaseCollection);
+    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $server->shouldNotReceive('delete');
+    $client->shouldReceive('server')->with(999)->twice()->andReturn($server);
+    $provider = new class($client, $lifecycleClient) extends PloiProvider
+    {
+        public function __construct(
+            private readonly Ploi $fakeClient,
+            ServerLifecycleClientInterface $lifecycleClient,
+        ) {
+            parent::__construct(['api_key' => 'token'], $lifecycleClient);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+    };
+
+    expect($provider->destroy(
+        makePluginProject(),
+        makePluginProfile(makePluginServer([
+            'name' => 'api-pr-999',
+            'credential' => '42',
+            'region' => 'eu-west',
+            'plan' => 'small',
+        ], 'retain')),
+    ))->toBeTrue();
 });
