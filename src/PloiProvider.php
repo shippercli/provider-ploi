@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace ShipperCli\ProviderPloi;
 
 use Ploi\Ploi;
+use ShipperCli\Contracts\DeploymentLogsProviderInterface;
 use ShipperCli\Contracts\DeploymentProviderInterface;
+use ShipperCli\Contracts\DeploymentStatusProviderInterface;
 use ShipperCli\Contracts\ProviderCapabilitiesInterface;
 
-class PloiProvider implements DeploymentProviderInterface, ProviderCapabilitiesInterface
+class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProviderInterface, DeploymentStatusProviderInterface, ProviderCapabilitiesInterface
 {
     private const MANAGED_SERVER_PREFIX = 'shipper';
 
@@ -24,6 +26,10 @@ class PloiProvider implements DeploymentProviderInterface, ProviderCapabilitiesI
     private ?ServerLifecycleClientInterface $serverLifecycleClient;
 
     private string $lastError = '';
+
+    private int $lastServerId = 0;
+
+    private int $lastSiteId = 0;
 
     /** @param array<string, mixed> $config */
     public function __construct(array $config = [], ?ServerLifecycleClientInterface $serverLifecycleClient = null)
@@ -223,6 +229,9 @@ class PloiProvider implements DeploymentProviderInterface, ProviderCapabilitiesI
                 $siteId = (int) $existingSite->id;
             }
 
+            $this->lastServerId = $serverId;
+            $this->lastSiteId = $siteId;
+
             foreach ($this->projectDatabases($project) as $database) {
                 $dbName = $this->interpolateDatabaseName(
                     $this->databaseValue($database, 'name'),
@@ -403,6 +412,208 @@ class PloiProvider implements DeploymentProviderInterface, ProviderCapabilitiesI
     public function getLastError(): string
     {
         return $this->lastError;
+    }
+
+    /**
+     * Apply optional configuration after the deployment target exists.
+     *
+     * @return array{success: bool, message: string, logs: array<int, string>}
+     */
+    public function postApply(object $project, object $profile): array
+    {
+        if ($this->lastServerId <= 0 || $this->lastSiteId <= 0) {
+            return ['success' => false, 'message' => 'Ploi deployment target is unavailable for post-apply configuration', 'logs' => []];
+        }
+
+        $operations = [
+            $this->applyAliases($profile),
+            $this->applyDeployScript($project, $profile),
+            $this->applyEnvironment($project, $profile),
+            $this->applySsl($project, $profile),
+        ];
+
+        foreach ($operations as $operation) {
+            if (! ($operation['success'] ?? false)) {
+                $message = $operation['message'] ?? 'Ploi post-apply configuration failed';
+
+                return [
+                    'success' => false,
+                    'message' => \is_string($message) ? $message : 'Ploi post-apply configuration failed',
+                    'logs' => $this->deploymentLogs($this->lastServerId, $this->lastSiteId),
+                ];
+            }
+        }
+
+        return [
+            'success' => true,
+            'message' => 'Ploi post-apply configuration completed',
+            'logs' => $this->deploymentLogs($this->lastServerId, $this->lastSiteId),
+        ];
+    }
+
+    public function status(object $project, object $profile): array
+    {
+        $serverId = $this->resolveServerIdForProfile($project, $profile);
+        if ($serverId <= 0) {
+            return ['provider' => 'ploi', 'state' => 'not_found', 'server_id' => null, 'site' => null];
+        }
+
+        $site = $this->findSite($serverId, $this->profileDomain($profile));
+
+        return [
+            'provider' => 'ploi',
+            'state' => $site === null ? 'server_ready' : 'deployed',
+            'server_id' => $serverId,
+            'site' => $site,
+        ];
+    }
+
+    public function logs(object $project, object $profile, int $lines = 100): array
+    {
+        $serverId = $this->resolveServerIdForProfile($project, $profile);
+        $site = $this->findSite($serverId, $this->profileDomain($profile));
+        if ($site === null || ! \property_exists($site, 'id')) {
+            return [];
+        }
+
+        return \array_slice($this->deploymentLogs($serverId, (int) $site->id), -$lines);
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applyAliases(object $profile): array
+    {
+        $aliases = \method_exists($profile, 'aliases') ? $profile->aliases() : [];
+        if (! \is_array($aliases) || $aliases === []) {
+            return ['success' => true, 'message' => 'No aliases to configure'];
+        }
+
+        try {
+            $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->alias()->create($aliases);
+
+            return ['success' => true, 'message' => 'Aliases configured successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to configure domain aliases: '.$exception->getMessage()];
+        }
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applyDeployScript(object $project, object $profile): array
+    {
+        $profileScript = \method_exists($profile, 'deployScript') ? $profile->deployScript() : null;
+        $projectScript = \method_exists($project, 'deployScript') ? $project->deployScript() : '';
+        $script = \is_string($profileScript) && $profileScript !== '' ? $profileScript : (\is_string($projectScript) ? $projectScript : '');
+        if ($script === '') {
+            return ['success' => true, 'message' => 'No deploy script to configure'];
+        }
+
+        $script = \str_replace(['{site}', '{branch}'], [$this->profileDomain($profile), $this->profileBranch($profile)], $script);
+
+        try {
+            $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->deployment()->updateDeployScript($script);
+
+            return ['success' => true, 'message' => 'Deploy script configured successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to configure deploy script: '.$exception->getMessage()];
+        }
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applyEnvironment(object $project, object $profile): array
+    {
+        $projectEnvironment = \method_exists($project, 'environment') ? $project->environment() : null;
+        $profileEnvironment = \method_exists($profile, 'environment') ? $profile->environment() : null;
+        if (! \is_object($projectEnvironment) || ! \method_exists($projectEnvironment, 'mergeWith') || ! \is_object($profileEnvironment)) {
+            return ['success' => true, 'message' => 'No environment variables to configure'];
+        }
+
+        $merged = $projectEnvironment->mergeWith($profileEnvironment);
+        $variables = \is_object($merged) && \method_exists($merged, 'variables') ? $merged->variables() : [];
+        if (! \is_array($variables) || $variables === []) {
+            return ['success' => true, 'message' => 'No environment variables to configure'];
+        }
+
+        try {
+            $environment = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->environment();
+            $existing = $environment->get()->getJson()->data->content ?? '';
+            $environment->update($this->mergeEnvironment(\is_string($existing) ? $existing : '', $variables));
+
+            return ['success' => true, 'message' => 'Environment variables configured successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to configure environment variables: '.$exception->getMessage()];
+        }
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applySsl(object $project, object $profile): array
+    {
+        $ssl = \method_exists($project, 'ssl') ? $project->ssl() : null;
+        if (! \is_object($ssl) || ! \method_exists($ssl, 'enabled') || ! $ssl->enabled()) {
+            return ['success' => true, 'message' => 'SSL not enabled'];
+        }
+
+        $type = \method_exists($ssl, 'type') ? $ssl->type() : 'letsencrypt';
+
+        try {
+            $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->certificates()->create(
+                $this->profileDomain($profile),
+                \is_string($type) ? $type : 'letsencrypt',
+                false,
+            );
+
+            return ['success' => true, 'message' => 'SSL certificate created successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to create SSL certificate: '.$exception->getMessage()];
+        }
+    }
+
+    /** @param array<string, mixed> $variables */
+    private function mergeEnvironment(string $content, array $variables): string
+    {
+        $lines = $content === '' ? [] : \preg_split('/\r?\n/', $content);
+        $values = [];
+        foreach (\is_array($lines) ? $lines : [] as $line) {
+            if (\str_contains($line, '=')) {
+                [$key, $value] = \explode('=', $line, 2);
+                $values[$key] = $value;
+            }
+        }
+
+        foreach ($variables as $key => $value) {
+            if (\is_string($key) && \is_scalar($value)) {
+                $values[$key] = (string) $value;
+            }
+        }
+
+        return \implode("\n", \array_map(static fn (string $key, string $value): string => "{$key}={$value}", \array_keys($values), $values));
+    }
+
+    private function profileDomain(object $profile): string
+    {
+        $domain = $this->profileValue($profile, 'domain');
+
+        return \is_string($domain) ? $domain : '';
+    }
+
+    private function findSite(int $serverId, string $domain): ?object
+    {
+        $sites = $this->getClient()->server($serverId)->sites()->get()->getJson()->data ?? null;
+        if (! \is_array($sites)) {
+            return null;
+        }
+
+        foreach ($sites as $site) {
+            if (\is_object($site) && \property_exists($site, 'domain') && $site->domain === $domain) {
+                return $site;
+            }
+        }
+
+        return null;
+    }
+
+    /** @return array<int, string> */
+    protected function deploymentLogs(int $serverId, int $siteId): array
+    {
+        return $this->getDeploymentLogs($serverId, $siteId);
     }
 
     protected function getClient(): Ploi

@@ -9,6 +9,11 @@ Current scope includes:
 - deploy to existing Ploi servers
 - create preview or temporary servers on demand
 - optional cleanup for Shipper-created preview infrastructure
+- provider-owned alias, deploy-script, environment, and SSL post-apply configuration
+- `shipper status` and `shipper logs` support
+
+Rollback is not currently supported by Ploi and is reported as unavailable by
+`shipper rollback`.
 
 This repository also contains the provider metadata and logo used by the Shipper website provider catalog.
 
