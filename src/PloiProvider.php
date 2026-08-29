@@ -72,6 +72,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $apiKey = $this->config['api_key'] ?? null;
         if (! \is_string($apiKey) || $apiKey === '') {
             $errors[] = 'Ploi API key is required';
+        } elseif (\preg_match('/\$\{[A-Z_][A-Z0-9_]*\}/', $apiKey) === 1) {
+            $errors[] = 'Ploi API key contains an unresolved environment variable';
         }
 
         $server = $this->extractServerLifecycle($profile);
@@ -1150,15 +1152,31 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $name = \str_replace('${PROJECT_NAME}', $projectName, $name);
         $name = \str_replace('${PROFILE}', $profileName, $name);
 
-        return (string) \preg_replace_callback(
+        $missingVariables = [];
+
+        $name = (string) \preg_replace_callback(
             '/\$\{([A-Z_][A-Z0-9_]*)\}/',
-            static function (array $matches): string {
+            static function (array $matches) use (&$missingVariables): string {
                 $value = \getenv($matches[1]);
 
-                return $value !== false ? $value : '';
+                if ($value === false) {
+                    $missingVariables[] = $matches[1];
+
+                    return $matches[0];
+                }
+
+                return $value;
             },
             $name,
         );
+
+        if ($missingVariables !== []) {
+            $variables = \implode(', ', \array_unique($missingVariables));
+
+            throw new \RuntimeException("Database identifier contains unresolved environment variable(s): {$variables}");
+        }
+
+        return $name;
     }
 
     private function generateDatabasePassword(): string
