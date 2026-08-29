@@ -8,6 +8,7 @@ use Ploi\Ploi;
 use Ploi\Resources\Server;
 use ShipperCli\ProviderPloi\PloiProvider;
 use ShipperCli\ProviderPloi\PloiPlugin;
+use ShipperCli\ProviderPloi\ServerLifecycleClientInterface;
 
 test('plugin exposes the ploi provider mapping', function (): void {
     expect((new PloiPlugin)->providers())->toBe(['ploi' => PloiProvider::class]);
@@ -210,6 +211,90 @@ test('provider package resolves existing managed server by name', function (): v
     ], 'destroy'));
 
     expect($provider->resolve(makePluginProject(), $profile, true))->toBe(321);
+});
+
+test('provider package verifies an existing server before deployment', function (): void {
+    $lifecycleClient = new class implements ServerLifecycleClientInterface
+    {
+        public int $requestedServerId = 0;
+
+        public function list(): array
+        {
+            return [];
+        }
+
+        public function get(int $serverId): object
+        {
+            $this->requestedServerId = $serverId;
+
+            return (object) ['id' => $serverId, 'name' => 'production'];
+        }
+
+        public function create(string $name, int $credential, string $region, string $plan, array $options = []): int
+        {
+            throw new LogicException('Not used');
+        }
+
+        public function delete(int $serverId): void
+        {
+            throw new LogicException('Not used');
+        }
+    };
+    $provider = new class($lifecycleClient) extends PloiProvider
+    {
+        public function __construct(ServerLifecycleClientInterface $lifecycleClient)
+        {
+            parent::__construct(['api_key' => 'token', 'server_id' => '123'], $lifecycleClient);
+        }
+
+        public function resolve(object $project, object $profile): int
+        {
+            return $this->resolveServerIdForProfile($project, $profile);
+        }
+    };
+
+    expect($provider->resolve(makePluginProject(), makePluginProfile()))->toBe(123)
+        ->and($lifecycleClient->requestedServerId)->toBe(123);
+});
+
+test('provider package fails clearly when an existing server cannot be loaded', function (): void {
+    $lifecycleClient = new class implements ServerLifecycleClientInterface
+    {
+        public function list(): array
+        {
+            return [];
+        }
+
+        public function get(int $serverId): object
+        {
+            throw new RuntimeException("Ploi server {$serverId} was not found");
+        }
+
+        public function create(string $name, int $credential, string $region, string $plan, array $options = []): int
+        {
+            throw new LogicException('Not used');
+        }
+
+        public function delete(int $serverId): void
+        {
+            throw new LogicException('Not used');
+        }
+    };
+    $provider = new class($lifecycleClient) extends PloiProvider
+    {
+        public function __construct(ServerLifecycleClientInterface $lifecycleClient)
+        {
+            parent::__construct(['api_key' => 'token', 'server_id' => '404'], $lifecycleClient);
+        }
+
+        public function resolve(object $project, object $profile): int
+        {
+            return $this->resolveServerIdForProfile($project, $profile);
+        }
+    };
+
+    expect(fn (): int => $provider->resolve(makePluginProject(), makePluginProfile()))
+        ->toThrow(RuntimeException::class, 'Ploi server 404 was not found');
 });
 
 test('provider package creates managed server when missing', function (): void {

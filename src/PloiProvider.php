@@ -21,12 +21,15 @@ class PloiProvider implements DeploymentProviderInterface, ProviderCapabilitiesI
 
     private ?Ploi $client = null;
 
+    private ?ServerLifecycleClientInterface $serverLifecycleClient;
+
     private string $lastError = '';
 
     /** @param array<string, mixed> $config */
-    public function __construct(array $config = [])
+    public function __construct(array $config = [], ?ServerLifecycleClientInterface $serverLifecycleClient = null)
     {
         $this->config = $config;
+        $this->serverLifecycleClient = $serverLifecycleClient;
     }
 
     public function getName(): string
@@ -503,7 +506,14 @@ class PloiProvider implements DeploymentProviderInterface, ProviderCapabilitiesI
     {
         $server = $this->extractServerLifecycle($profile);
         if ($server === null || ($server['mode'] ?? null) === 'existing') {
-            return (int) $this->getServerId($profile);
+            $serverId = (int) $this->getServerId($profile);
+            if ($serverId <= 0) {
+                throw new \RuntimeException('Ploi existing server ID is missing or invalid');
+            }
+
+            $this->getServerLifecycleClient()->get($serverId);
+
+            return $serverId;
         }
 
         $managedName = $this->managedServerName($project, $profile, $server);
@@ -521,12 +531,7 @@ class PloiProvider implements DeploymentProviderInterface, ProviderCapabilitiesI
             return null;
         }
 
-        $serverData = $this->getClient()->server()->get()->getJson()->data ?? null;
-        if (! \is_array($serverData)) {
-            return null;
-        }
-
-        foreach ($serverData as $server) {
+        foreach ($this->getServerLifecycleClient()->list() as $server) {
             if (\is_object($server) && \property_exists($server, 'name') && \property_exists($server, 'id') && $server->name === $name) {
                 return (int) $server->id;
             }
@@ -548,13 +553,7 @@ class PloiProvider implements DeploymentProviderInterface, ProviderCapabilitiesI
 
         unset($spec['name'], $spec['credential'], $spec['provider_id'], $spec['provider'], $spec['region'], $spec['plan'], $spec['size']);
 
-        $response = $this->getClient()->server()->create($name, $credential, $region, $plan, $spec);
-        $responseData = $response->getJson()->data ?? null;
-        if ($responseData === null || ! \property_exists($responseData, 'id')) {
-            throw new \RuntimeException('Failed to create Ploi server: invalid response from API');
-        }
-
-        return (int) $responseData->id;
+        return $this->getServerLifecycleClient()->create($name, $credential, $region, $plan, $spec);
     }
 
     /**
@@ -576,16 +575,7 @@ class PloiProvider implements DeploymentProviderInterface, ProviderCapabilitiesI
         $managedName = $this->managedServerName($project, $profile, $server);
         $serverId = $this->findServerIdByName($managedName);
         if ($serverId !== null) {
-            $response = $this->getClient()->server($serverId)->delete();
-            $message = $response->getJson()->message ?? null;
-            if (\is_string($message)) {
-                $messageLower = \strtolower($message);
-                if (\str_contains($messageLower, 'error') || \str_contains($messageLower, 'failed')) {
-                    $this->lastError = 'Failed to delete server: '.$message;
-
-                    return false;
-                }
-            }
+            $this->getServerLifecycleClient()->delete($serverId);
 
             return true;
         }
@@ -598,6 +588,15 @@ class PloiProvider implements DeploymentProviderInterface, ProviderCapabilitiesI
         }
 
         return true;
+    }
+
+    private function getServerLifecycleClient(): ServerLifecycleClientInterface
+    {
+        if ($this->serverLifecycleClient === null) {
+            $this->serverLifecycleClient = new PloiServerLifecycleClient($this->getClient());
+        }
+
+        return $this->serverLifecycleClient;
     }
 
     /**
