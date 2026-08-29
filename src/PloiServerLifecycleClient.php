@@ -12,12 +12,24 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
 
     public function list(): array
     {
-        $data = $this->client->server()->get()->getJson()->data ?? null;
-        if (! \is_array($data)) {
-            throw new \RuntimeException('Ploi returned an invalid server list response');
-        }
+        $servers = [];
+        $page = 1;
 
-        return \array_values(\array_filter($data, \is_object(...)));
+        do {
+            $json = $this->client->server()->page($page, 50)->getJson();
+            $data = $json->data ?? null;
+            if (! \is_array($data)) {
+                throw new \RuntimeException('Ploi returned an invalid server list response');
+            }
+
+            $servers = [...$servers, ...\array_values(\array_filter($data, \is_object(...)))];
+            $lastPage = isset($json->meta->last_page) && \is_numeric($json->meta->last_page)
+                ? (int) $json->meta->last_page
+                : $page;
+            $page++;
+        } while ($page <= $lastPage);
+
+        return $servers;
     }
 
     public function get(int $serverId): object
