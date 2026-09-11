@@ -57,11 +57,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             'ssl' => ['state' => 'supported'],
             'databases' => ['state' => 'supported'],
             'profiles' => ['state' => 'supported'],
-            'background_workloads' => ['state' => 'partial'],
+            'background_workloads' => ['state' => 'partial', 'limitations' => ['Queue, cron, and daemon configuration are rejected because Ploi workload APIs are not implemented.']],
             'env' => ['state' => 'supported'],
-            'observability' => ['state' => 'partial'],
+            'observability' => ['state' => 'partial', 'limitations' => ['Deployment and error logs are available, but application metrics are not exposed through the provider.']],
             'rollback' => ['state' => 'unsupported'],
-            'previews' => ['state' => 'partial'],
+            'previews' => ['state' => 'partial', 'limitations' => ['Profiles can target preview domains, but automated preview lifecycle cleanup is not implemented.']],
         ];
     }
 
