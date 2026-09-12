@@ -12,27 +12,34 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        php: ['8.3', '8.4']
+        php: ['8.3', '8.4', '8.5']
 
     name: PHP ${{ matrix.php }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
           php-version: '${{ matrix.php }}'
           extensions: mbstring, xml, ctype, json
+          tools: composer:v2
           coverage: none
 
-      - name: Validate composer.json
-        run: composer validate --strict --no-check-lock
+      - name: Validate package
+        run: composer validate --strict
 
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress
+
+      - name: Validate optimized autoloading
+        run: composer dump-autoload --optimize --strict-psr
 
       - name: Run tests
         env:
           PEST_NO_PLUGIN: "1"
         run: composer test
+
+      - name: Audit dependencies
+        run: composer audit --locked --no-interaction

@@ -16,6 +16,7 @@ use Ploi\Resources\Site;
 use ShipperCli\ProviderPloi\PloiProvider;
 use ShipperCli\ProviderPloi\PloiPlugin;
 use ShipperCli\ProviderPloi\ServerLifecycleClientInterface;
+use ShipperCli\Contracts\CapabilityManifest;
 
 test('plugin exposes the ploi provider mapping', function (): void {
     expect((new PloiPlugin)->providers())->toBe(['ploi' => PloiProvider::class]);
@@ -27,6 +28,11 @@ test('provider declares capability states explicitly', function (): void {
     expect($capabilities['app_deploy']['state'])->toBe('supported')
         ->and($capabilities['server_lifecycle']['state'])->toBe('partial')
         ->and($capabilities['rollback']['state'])->toBe('unsupported');
+});
+
+test('provider capability manifest conforms to the shared contract', function (): void {
+    expect(CapabilityManifest::from((new PloiProvider)->capabilities())->toArray())
+        ->toBe((new PloiProvider)->capabilities());
 });
 
 function makePluginProject(): object
