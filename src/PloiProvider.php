@@ -105,9 +105,6 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         $unsupported = [
-            'queues' => 'queues',
-            'cron' => 'cron jobs',
-            'daemons' => 'daemons',
             'networkRules' => 'network rules',
             'redirects' => 'redirects',
         ];
@@ -116,11 +113,6 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             if (\is_array($value) && $value !== []) {
                 $errors[] = "Ploi provider does not yet support configured {$label}";
             }
-        }
-
-        $phpVersion = \method_exists($project, 'phpVersion') ? $project->phpVersion() : '';
-        if (\is_string($phpVersion) && $phpVersion !== '') {
-            $errors[] = 'Ploi provider does not yet support configured php_version';
         }
 
         $nginxConfig = \method_exists($project, 'nginxConfig') ? $project->nginxConfig() : '';
@@ -176,6 +168,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
         $actions[] = 'Deploy site via Ploi API';
         $actions[] = 'Run deployment script';
+
+        $phpVersion = \method_exists($project, 'phpVersion') ? $project->phpVersion() : '';
+        if (\is_string($phpVersion) && $phpVersion !== '') {
+            $actions[] = 'Set site PHP version: '.$phpVersion;
+        }
 
         $note = $server !== null && ($server['mode'] ?? null) === 'create'
             ? 'This may provision a new Ploi server and create a real deployment.'
@@ -495,6 +492,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         $operations = [
+            $this->applyPhpVersion($project),
             $this->applyAliases($profile),
             $this->applyDeployScript($project, $profile),
             $this->applyEnvironment($project, $profile),
@@ -520,6 +518,23 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             'message' => 'Ploi post-apply configuration completed',
             'logs' => $this->deploymentLogs($this->lastServerId, $this->lastSiteId),
         ];
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applyPhpVersion(object $project): array
+    {
+        $phpVersion = \method_exists($project, 'phpVersion') ? $project->phpVersion() : '';
+        if (! \is_string($phpVersion) || $phpVersion === '') {
+            return ['success' => true, 'message' => 'No PHP version to configure'];
+        }
+
+        try {
+            $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->phpVersion($phpVersion);
+
+            return ['success' => true, 'message' => 'PHP version configured successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to configure PHP version: '.$exception->getMessage()];
+        }
     }
 
     public function status(object $project, object $profile): array

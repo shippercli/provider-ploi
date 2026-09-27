@@ -927,16 +927,50 @@ test('validation rejects parsed resources that Ploi does not apply', function ()
             return [new stdClass];
         }
 
+    };
+    $provider = new PloiProvider(['api_key' => 'token', 'server_id' => '123']);
+
+    expect($provider->validate($project, makePluginProfile()))
+        ->toBe([]);
+});
+
+test('post-apply configures the requested PHP version through the mocked Ploi site', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $site = m::mock(Site::class);
+    $site->shouldReceive('phpVersion')->with('8.4')->once();
+    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        public function configurePhpVersion(object $project): array
+        {
+            return $this->applyPhpVersion($project);
+        }
+    };
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 55);
+
+    $project = new class
+    {
         public function phpVersion(): string
         {
             return '8.4';
         }
     };
-    $provider = new PloiProvider(['api_key' => 'token', 'server_id' => '123']);
 
-    expect($provider->validate($project, makePluginProfile()))
-        ->toContain('Ploi provider does not yet support configured cron jobs')
-        ->toContain('Ploi provider does not yet support configured php_version');
+    expect($provider->configurePhpVersion($project))
+        ->toBe(['success' => true, 'message' => 'PHP version configured successfully']);
 });
 
 test('post-apply creates only missing aliases and passes force https to SSL', function (): void {
