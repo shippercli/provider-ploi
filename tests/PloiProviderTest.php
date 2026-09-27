@@ -12,6 +12,7 @@ use Ploi\Resources\Daemon;
 use Ploi\Resources\Database;
 use Ploi\Resources\Deployment;
 use Ploi\Resources\Environment;
+use Ploi\Resources\NetworkRule;
 use Ploi\Resources\Queue;
 use Ploi\Resources\Redirect;
 use Ploi\Resources\Repository;
@@ -625,6 +626,87 @@ test('provider package creates enabled redirects and skips disabled redirects', 
     };
 
     expect($provider->postApply($project, new stdClass))
+        ->toMatchArray(['success' => true, 'message' => 'Ploi post-apply configuration completed']);
+});
+
+test('provider package reconciles network rules with the core fromIp value', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $networkRules = m::mock(NetworkRule::class);
+    $response = m::mock(Response::class);
+    $response->shouldReceive('getJson')->once()->andReturn((object) [
+        'data' => [],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $networkRules->shouldReceive('page')->with(1, 50)->once()->andReturn($response);
+    $networkRules->shouldReceive('create')
+        ->once()
+        ->with('http [shippercli-managed-api-preview-http]', 8080, 'tcp', '203.0.113.0/24', 'allow');
+    $server->shouldReceive('networkRules')->withNoArgs()->once()->andReturn($networkRules);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        protected function applyAliases(object $profile): array
+        {
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applyDeployScript(object $project, object $profile): array
+        {
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applyEnvironment(object $project, object $profile): array
+        {
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applySsl(object $project, object $profile): array
+        {
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function deploymentLogs(int $serverId, int $siteId): array
+        {
+            return [];
+        }
+    };
+
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 456);
+
+    $project = new class
+    {
+        public function name(): string { return 'api'; }
+
+        public function networkRules(): array
+        {
+            return [
+                'http' => new class
+                {
+                    public function name(): string { return 'http'; }
+                    public function port(): int { return 8080; }
+                    public function type(): string { return 'tcp'; }
+                    public function ruleType(): string { return 'allow'; }
+                    public function fromIp(): ?string { return '203.0.113.0/24'; }
+                    public function enabled(): bool { return true; }
+                },
+            ];
+        }
+    };
+
+    expect($provider->postApply($project, makePluginProfile()))
         ->toMatchArray(['success' => true, 'message' => 'Ploi post-apply configuration completed']);
 });
 
