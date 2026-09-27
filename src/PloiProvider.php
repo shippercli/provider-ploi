@@ -705,7 +705,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @return array{success: bool, message: string} */
     protected function applyQueues(object $project, object $profile): array
     {
-        if (! method_exists($project, 'queues')) {
+        if (! $this->workloadSectionDeclared($project, 'queues')) {
             return ['success' => true, 'message' => 'No queue workers configured'];
         }
 
@@ -783,7 +783,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @return array{success: bool, message: string} */
     protected function applyCron(object $project, object $profile): array
     {
-        if (! method_exists($project, 'cron')) {
+        if (! $this->workloadSectionDeclared($project, 'cron')) {
             return ['success' => true, 'message' => 'No cron jobs configured'];
         }
 
@@ -852,7 +852,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @return array{success: bool, message: string} */
     protected function applyDaemons(object $project, object $profile): array
     {
-        if (! method_exists($project, 'daemons')) {
+        if (! $this->workloadSectionDeclared($project, 'daemons')) {
             return ['success' => true, 'message' => 'No daemons configured'];
         }
 
@@ -928,6 +928,15 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         return \is_array($workloads) ? $workloads : [];
     }
 
+    private function workloadSectionDeclared(object $project, string $section): bool
+    {
+        if (method_exists($project, 'hasSection')) {
+            return (bool) $project->hasSection($section);
+        }
+
+        return method_exists($project, $section);
+    }
+
     private function workloadEnabled(mixed $workload): bool
     {
         return ! \is_object($workload) || ! \method_exists($workload, 'enabled') || $workload->enabled();
@@ -975,7 +984,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     {
         $prefix = $this->workloadMarkerPrefix($project, $profile);
         foreach (['cronjobs' => 'cron', 'daemons' => 'daemons'] as $method => $configurationMethod) {
-            if (! method_exists($project, $configurationMethod)) {
+            if (! $this->workloadSectionDeclared($project, $configurationMethod)) {
                 continue;
             }
             $resource = $server->{$method}();
