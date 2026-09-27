@@ -16,8 +16,9 @@ Current scope includes:
 Rollback is not currently supported by Ploi and is reported as unavailable by
 `shipper rollback`.
 
-Network rules, `php_version`, and `nginx_config` are not yet applied by this
-provider. Redirects are created idempotently; disabled redirects are skipped,
+`php_version` and `nginx_config` are not yet applied by this provider. Network
+rules are reconciled with Shipper ownership markers and removed on destroy.
+Redirects are created idempotently; disabled redirects are skipped,
 and conflicting existing redirects are reported instead of modifying unmanaged
 configuration. Validation rejects a project that configures unsupported fields
 instead of silently ignoring them.

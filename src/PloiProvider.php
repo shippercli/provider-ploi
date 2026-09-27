@@ -104,13 +104,29 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $errors[] = 'Repository name is required';
         }
 
-        $unsupported = [
-            'networkRules' => 'network rules',
-        ];
-        foreach ($unsupported as $accessor => $label) {
-            $value = \method_exists($project, $accessor) ? $project->{$accessor}() : [];
-            if (\is_array($value) && $value !== []) {
-                $errors[] = "Ploi provider does not yet support configured {$label}";
+        $networkRules = \method_exists($project, 'networkRules') ? $project->networkRules() : [];
+        if (\is_array($networkRules)) {
+            foreach ($networkRules as $name => $rule) {
+                if (! \is_object($rule)) {
+                    continue;
+                }
+
+                $ruleName = \method_exists($rule, 'name') ? (string) $rule->name() : (string) $name;
+                $port = \method_exists($rule, 'port') ? (int) $rule->port() : 0;
+                $type = \method_exists($rule, 'type') ? \strtolower((string) $rule->type()) : '';
+                $ruleType = \method_exists($rule, 'ruleType') ? \strtolower((string) $rule->ruleType()) : '';
+                if ($ruleName === '') {
+                    $errors[] = "Ploi configured network rule {$name} requires a name";
+                }
+                if ($port < 1 || $port > 65535) {
+                    $errors[] = "Ploi configured network rule {$name} port must be between 1 and 65535";
+                }
+                if (! \in_array($type, ['tcp', 'udp'], true)) {
+                    $errors[] = "Ploi configured network rule {$name} type must be tcp or udp";
+                }
+                if (! \in_array($ruleType, ['allow', 'deny'], true)) {
+                    $errors[] = "Ploi configured network rule {$name} rule_type must be allow or deny";
+                }
             }
         }
 
@@ -540,6 +556,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $this->applyEnvironment($project, $profile),
             $this->applySsl($project, $profile),
             $this->applyRedirects($project),
+            $this->applyNetworkRules($project, $profile),
         ];
 
         foreach ($operations as $operation) {
@@ -772,6 +789,86 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             return ['success' => true, 'message' => 'Redirects configured successfully'];
         } catch (\Throwable $exception) {
             return ['success' => false, 'message' => 'Failed to configure redirects: '.$exception->getMessage()];
+        }
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applyNetworkRules(object $project, object $profile): array
+    {
+        if (! $this->workloadSectionDeclared($project, 'networkRules')) {
+            return ['success' => true, 'message' => 'No network rules to configure'];
+        }
+
+        $rules = $this->configuredNetworkRules($project);
+        try {
+            $server = $this->getClient()->server($this->lastServerId);
+            $resource = $server->networkRules();
+            $existing = $this->paginatedData($resource);
+            $prefix = $this->networkRuleMarkerPrefix($project, $profile);
+            $handled = [];
+
+            foreach ($rules as $name => $rule) {
+                if (! \is_object($rule)) {
+                    continue;
+                }
+
+                $marker = $this->networkRuleMarker($project, $profile, (string) $name);
+                $handled[$marker] = true;
+                $matches = \array_values(\array_filter($existing, fn (object $existingRule): bool => $this->networkRuleHasMarker($existingRule, $marker)));
+                $enabled = ! \method_exists($rule, 'enabled') || (bool) $rule->enabled();
+                if (! $enabled) {
+                    foreach ($matches as $existingRule) {
+                        $this->deleteNetworkRule($server, $existingRule);
+                    }
+                    continue;
+                }
+
+                $port = (int) $rule->port();
+                $type = \strtolower((string) $rule->type());
+                $ruleType = \strtolower((string) $rule->ruleType());
+                $fromIp = \method_exists($rule, 'fromIp') ? $rule->fromIp() : null;
+                $managedName = $this->networkRuleName($rule, $marker);
+                $matching = null;
+                foreach ($matches as $existingRule) {
+                    $existingType = $existingRule->type ?? null;
+                    $existingFromIp = $existingRule->from_ip_address ?? ($existingRule->from_ip ?? null);
+                    $typeMatches = $existingType === null || \strtolower((string) $existingType) === $type;
+                    $fromIpMatches = $existingFromIp === null || (string) $existingFromIp === (string) $fromIp;
+                    if (($existingRule->name ?? null) === $managedName
+                        && (int) ($existingRule->port ?? 0) === $port
+                        && $typeMatches
+                        && \strtolower((string) ($existingRule->rule_type ?? '')) === $ruleType
+                        && $fromIpMatches) {
+                        $matching = $existingRule;
+                        break;
+                    }
+                }
+
+                if ($matching !== null) {
+                    foreach ($matches as $existingRule) {
+                        if ($existingRule !== $matching) {
+                            $this->deleteNetworkRule($server, $existingRule);
+                        }
+                    }
+                    continue;
+                }
+
+                foreach ($matches as $existingRule) {
+                    $this->deleteNetworkRule($server, $existingRule);
+                }
+                $resource->create($managedName, $port, $type, $fromIp, $ruleType);
+            }
+
+            foreach ($existing as $existingRule) {
+                $marker = $this->networkRuleMarkerFromName($existingRule->name ?? null, $prefix);
+                if ($marker !== null && ! isset($handled[$marker])) {
+                    $this->deleteNetworkRule($server, $existingRule);
+                }
+            }
+
+            return ['success' => true, 'message' => 'Network rules configured successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to configure network rules: '.$exception->getMessage()];
         }
     }
 
@@ -1097,6 +1194,70 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 $server->{$method}((int) $workload->id)->delete();
             }
         }
+
+        if ($this->workloadSectionDeclared($project, 'networkRules')) {
+            $networkRules = $server->networkRules();
+            $networkPrefix = $this->networkRuleMarkerPrefix($project, $profile);
+            foreach ($this->paginatedData($networkRules) as $rule) {
+                if ($this->networkRuleMarkerFromName($rule->name ?? null, $networkPrefix) === null) {
+                    continue;
+                }
+                $this->deleteNetworkRule($server, $rule);
+            }
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private function configuredNetworkRules(object $project): array
+    {
+        $rules = \method_exists($project, 'networkRules') ? $project->networkRules() : [];
+
+        return \is_array($rules) ? $rules : [];
+    }
+
+    private function networkRuleMarker(object $project, object $profile, string $name): string
+    {
+        return $this->networkRuleMarkerPrefix($project, $profile).$this->slugify($name);
+    }
+
+    private function networkRuleMarkerPrefix(object $project, object $profile): string
+    {
+        return 'shippercli-managed-'.$this->slugify($this->projectName($project)).'-'.$this->slugify($this->profileName($profile)).'-';
+    }
+
+    private function networkRuleName(object $rule, string $marker): string
+    {
+        $name = \method_exists($rule, 'name') ? (string) $rule->name() : $marker;
+
+        return $name.' ['.$marker.']';
+    }
+
+    private function networkRuleHasMarker(object $rule, string $marker): bool
+    {
+        return \str_contains((string) ($rule->name ?? ''), '['.$marker.']');
+    }
+
+    private function networkRuleMarkerFromName(mixed $name, string $prefix): ?string
+    {
+        if (! \is_string($name)) {
+            return null;
+        }
+
+        $pattern = '/\['.\preg_quote($prefix, '/').'([a-z0-9-]+)\]$/';
+        if (\preg_match($pattern, $name, $matches) !== 1) {
+            return null;
+        }
+
+        return $prefix.$matches[1];
+    }
+
+    private function deleteNetworkRule(object $server, object $rule): void
+    {
+        if (! \property_exists($rule, 'id') || ! \is_numeric($rule->id)) {
+            throw new \RuntimeException('Ploi network rule resource is missing an ID and cannot be reconciled');
+        }
+
+        $server->networkRules((int) $rule->id)->delete();
     }
 
     private function queueKey(mixed $connection, mixed $queue): string
