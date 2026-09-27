@@ -9,6 +9,7 @@ Current scope includes:
 - deploy to existing Ploi servers
 - create preview or temporary servers on demand
 - optional cleanup for Shipper-created preview infrastructure
+- ownership-guarded preview lifecycle for profile-specific servers and sites
 - provider-owned alias, deploy-script, environment, and SSL post-apply configuration
 - `shipper status` and `shipper logs` support
 

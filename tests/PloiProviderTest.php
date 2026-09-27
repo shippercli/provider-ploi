@@ -26,6 +26,7 @@ test('provider declares capability states explicitly', function (): void {
 
     expect($capabilities['app_deploy']['state'])->toBe('supported')
         ->and($capabilities['server_lifecycle']['state'])->toBe('partial')
+        ->and($capabilities['previews']['state'])->toBe('supported')
         ->and($capabilities['rollback']['state'])->toBe('unsupported');
 });
 

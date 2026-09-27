@@ -61,7 +61,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             'env' => ['state' => 'supported'],
             'observability' => ['state' => 'partial'],
             'rollback' => ['state' => 'unsupported'],
-            'previews' => ['state' => 'partial'],
+            'previews' => ['state' => 'supported', 'limitations' => ['Preview cleanup requires an explicit destroy operation and managed server identity.']],
         ];
     }
 
