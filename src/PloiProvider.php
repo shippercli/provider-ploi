@@ -704,6 +704,10 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @return array{success: bool, message: string} */
     protected function applyQueues(object $project, object $profile): array
     {
+        if (! method_exists($project, 'queues')) {
+            return ['success' => true, 'message' => 'No queue workers configured'];
+        }
+
         try {
             $resource = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->queues();
             $existing = $this->paginatedData($resource);
@@ -777,6 +781,10 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @return array{success: bool, message: string} */
     protected function applyCron(object $project, object $profile): array
     {
+        if (! method_exists($project, 'cron')) {
+            return ['success' => true, 'message' => 'No cron jobs configured'];
+        }
+
         try {
             $resource = $this->getClient()->server($this->lastServerId)->cronjobs();
             $existing = $this->paginatedData($resource);
@@ -841,6 +849,10 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @return array{success: bool, message: string} */
     protected function applyDaemons(object $project, object $profile): array
     {
+        if (! method_exists($project, 'daemons')) {
+            return ['success' => true, 'message' => 'No daemons configured'];
+        }
+
         try {
             $resource = $this->getClient()->server($this->lastServerId)->daemons();
             $existing = $this->paginatedData($resource);
