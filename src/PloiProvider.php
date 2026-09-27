@@ -106,12 +106,31 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
         $unsupported = [
             'networkRules' => 'network rules',
-            'redirects' => 'redirects',
         ];
         foreach ($unsupported as $accessor => $label) {
             $value = \method_exists($project, $accessor) ? $project->{$accessor}() : [];
             if (\is_array($value) && $value !== []) {
                 $errors[] = "Ploi provider does not yet support configured {$label}";
+            }
+        }
+
+        $redirects = \method_exists($project, 'redirects') ? $project->redirects() : [];
+        if (\is_array($redirects)) {
+            foreach ($redirects as $name => $redirect) {
+                if (! \is_object($redirect) || ! $this->redirectEnabled($redirect)) {
+                    continue;
+                }
+
+                $from = \method_exists($redirect, 'from') ? $redirect->from() : '';
+                $to = \method_exists($redirect, 'to') ? $redirect->to() : '';
+                if (! \is_string($from) || $from === '' || ! \is_string($to) || $to === '') {
+                    $errors[] = "Ploi configured redirect {$name} requires non-empty from and to values";
+                }
+
+                $type = \method_exists($redirect, 'type') ? $redirect->type() : 301;
+                if ($this->redirectType($type) === null) {
+                    $errors[] = "Ploi configured redirect {$name} has an unsupported type; use 301, 302, permanent, or redirect";
+                }
             }
         }
 
@@ -520,6 +539,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $this->applyDeployScript($project, $profile),
             $this->applyEnvironment($project, $profile),
             $this->applySsl($project, $profile),
+            $this->applyRedirects($project),
         ];
 
         foreach ($operations as $operation) {
@@ -699,6 +719,59 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             return ['success' => true, 'message' => 'SSL certificate created successfully'];
         } catch (\Throwable $exception) {
             return ['success' => false, 'message' => 'Failed to create SSL certificate: '.$exception->getMessage()];
+        }
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applyRedirects(object $project): array
+    {
+        $redirects = \method_exists($project, 'redirects') ? $project->redirects() : [];
+        if (! \is_array($redirects) || $redirects === []) {
+            return ['success' => true, 'message' => 'No redirects to configure'];
+        }
+
+        try {
+            $resource = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->redirects();
+            $existing = $this->paginatedData($resource);
+
+            foreach ($redirects as $name => $redirect) {
+                if (! \is_object($redirect) || ! $this->redirectEnabled($redirect)) {
+                    continue;
+                }
+
+                $from = \method_exists($redirect, 'from') ? $redirect->from() : '';
+                $to = \method_exists($redirect, 'to') ? $redirect->to() : '';
+                $typeValue = \method_exists($redirect, 'type') ? $redirect->type() : 301;
+                $type = $this->redirectType($typeValue);
+                if (! \is_string($from) || ! \is_string($to) || $from === '' || $to === '' || $type === null) {
+                    return ['success' => false, 'message' => "Invalid Ploi redirect configuration: {$name}"];
+                }
+
+                $matched = false;
+                foreach ($existing as $existingRedirect) {
+                    $existingFrom = $existingRedirect->redirect_from ?? null;
+                    if ($existingFrom !== $from) {
+                        continue;
+                    }
+
+                    $existingTo = $existingRedirect->redirect_to ?? null;
+                    $existingType = $this->redirectType($existingRedirect->type ?? null);
+                    if ($existingTo === $to && $existingType === $type) {
+                        $matched = true;
+                        break;
+                    }
+
+                    return ['success' => false, 'message' => "Ploi already has a conflicting redirect for {$from}; refusing to modify an unmanaged redirect"];
+                }
+
+                if (! $matched) {
+                    $resource->create($from, $to, $type);
+                }
+            }
+
+            return ['success' => true, 'message' => 'Redirects configured successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to configure redirects: '.$exception->getMessage()];
         }
     }
 
@@ -918,6 +991,32 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         } catch (\Throwable $exception) {
             return ['success' => false, 'message' => 'Failed to configure daemons: '.$exception->getMessage()];
         }
+    }
+
+    private function redirectEnabled(object $redirect): bool
+    {
+        return ! \method_exists($redirect, 'enabled') || (bool) $redirect->enabled();
+    }
+
+    private function redirectType(mixed $type): ?string
+    {
+        if (\is_int($type)) {
+            return match ($type) {
+                301 => 'permanent',
+                302 => 'redirect',
+                default => null,
+            };
+        }
+
+        if (! \is_string($type)) {
+            return null;
+        }
+
+        return match (\strtolower(\trim($type))) {
+            '301', 'permanent' => 'permanent',
+            '302', 'redirect' => 'redirect',
+            default => null,
+        };
     }
 
     /** @return array<string, mixed> */
