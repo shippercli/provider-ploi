@@ -13,6 +13,7 @@ use Ploi\Resources\Database;
 use Ploi\Resources\Deployment;
 use Ploi\Resources\Environment;
 use Ploi\Resources\Queue;
+use Ploi\Resources\Redirect;
 use Ploi\Resources\Repository;
 use Ploi\Resources\Server;
 use Ploi\Resources\Site;
@@ -541,6 +542,90 @@ test('provider package runs post-apply capabilities without relying on the core 
         'message' => 'Ploi post-apply configuration completed',
         'logs' => ['deployment complete'],
     ])->and($provider->operations)->toBe(['aliases', 'deploy-script', 'environment', 'ssl']);
+});
+
+test('provider package creates enabled redirects and skips disabled redirects', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $site = m::mock(Site::class);
+    $redirects = m::mock(Redirect::class);
+    $response = m::mock(Response::class);
+    $response->shouldReceive('getJson')->once()->andReturn((object) [
+        'data' => [],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $redirects->shouldReceive('page')->with(1, 50)->once()->andReturn($response);
+    $redirects->shouldReceive('create')->once()->with('/old', '/new', 'permanent');
+    $site->shouldReceive('redirects')->once()->andReturn($redirects);
+    $server->shouldReceive('sites')->with(456)->once()->andReturn($site);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        protected function applyAliases(object $profile): array
+        {
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applyDeployScript(object $project, object $profile): array
+        {
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applyEnvironment(object $project, object $profile): array
+        {
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function applySsl(object $project, object $profile): array
+        {
+            return ['success' => true, 'message' => 'ok'];
+        }
+
+        protected function deploymentLogs(int $serverId, int $siteId): array
+        {
+            return [];
+        }
+    };
+
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 456);
+
+    $project = new class
+    {
+        public function redirects(): array
+        {
+            return [
+                'enabled' => new class
+                {
+                    public function from(): string { return '/old'; }
+                    public function to(): string { return '/new'; }
+                    public function type(): int { return 301; }
+                    public function enabled(): bool { return true; }
+                },
+                'disabled' => new class
+                {
+                    public function from(): string { return '/skip'; }
+                    public function to(): string { return '/ignored'; }
+                    public function type(): int { return 302; }
+                    public function enabled(): bool { return false; }
+                },
+            ];
+        }
+    };
+
+    expect($provider->postApply($project, new stdClass))
+        ->toMatchArray(['success' => true, 'message' => 'Ploi post-apply configuration completed']);
 });
 
 test('provider package lists sites across every page', function (): void {
