@@ -115,6 +115,14 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
         }
 
+        foreach (['cron' => 'cron jobs', 'daemons' => 'daemons'] as $method => $label) {
+            foreach ($this->configuredWorkloads($project, $method) as $name => $workload) {
+                if ($this->workloadEnabled($workload) && $this->workloadString($workload, 'command') === '') {
+                    $errors[] = "Ploi configured {$label} entry {$name} requires a non-empty command";
+                }
+            }
+        }
+
         $phpVersion = \method_exists($project, 'phpVersion') ? $project->phpVersion() : '';
         if (\is_string($phpVersion) && $phpVersion !== '') {
             $errors[] = 'Ploi provider does not yet support configured php_version';
@@ -356,6 +364,13 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                     return false;
                 }
 
+                $workloads = $this->applyWorkloads($project, $profile);
+                if (! ($workloads['success'] ?? false)) {
+                    $this->lastError = (string) ($workloads['message'] ?? 'Failed to configure Ploi workloads');
+
+                    return false;
+                }
+
                 return true;
             }
 
@@ -504,9 +519,6 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $this->applyDeployScript($project, $profile),
             $this->applyEnvironment($project, $profile),
             $this->applySsl($project, $profile),
-            $this->applyQueues($project, $profile),
-            $this->applyCron($project, $profile),
-            $this->applyDaemons($project, $profile),
         ];
 
         foreach ($operations as $operation) {
@@ -559,6 +571,25 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     }
 
     /** @return array{success: bool, message: string} */
+    /** @return array{success: bool, message: string} */
+    protected function applyWorkloads(object $project, object $profile): array
+    {
+        foreach ([
+            $this->applyQueues($project, $profile),
+            $this->applyCron($project, $profile),
+            $this->applyDaemons($project, $profile),
+        ] as $operation) {
+            if (! ($operation['success'] ?? false)) {
+                return [
+                    'success' => false,
+                    'message' => (string) ($operation['message'] ?? 'Failed to configure Ploi workloads'),
+                ];
+            }
+        }
+
+        return ['success' => true, 'message' => 'Ploi workloads configured successfully'];
+    }
+
     protected function applyAliases(object $profile): array
     {
         $aliases = \method_exists($profile, 'aliases') ? $profile->aliases() : [];
@@ -673,41 +704,67 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @return array{success: bool, message: string} */
     protected function applyQueues(object $project, object $profile): array
     {
-        $queues = $this->configuredWorkloads($project, 'queues');
-        if ($queues === []) {
-            return ['success' => true, 'message' => 'No queue workers to configure'];
-        }
-
         try {
             $resource = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->queues();
             $existing = $this->paginatedData($resource);
+            $existingByKey = [];
+            foreach ($existing as $worker) {
+                $key = $this->queueKey($worker->connection ?? '', $worker->queue ?? '');
+                $existingByKey[$key][] = $worker;
+            }
+
+            $handledKeys = [];
+            $queues = $this->configuredWorkloads($project, 'queues');
             foreach ($queues as $queue) {
+                $connection = $this->workloadString($queue, 'connection', 'database');
+                $name = $this->workloadString($queue, 'queue', 'default');
+                $key = $this->queueKey($connection, $name);
+                $handledKeys[$key] = true;
+                $matches = $existingByKey[$key] ?? [];
+
                 if (! $this->workloadEnabled($queue)) {
+                    foreach ($matches as $worker) {
+                        $this->deleteWorkloadResource($resource, $worker);
+                    }
                     continue;
                 }
 
-                $connection = $this->workloadString($queue, 'connection', 'database');
-                $name = $this->workloadString($queue, 'queue', 'default');
                 $maximumSeconds = $this->workloadInt($queue, 'maxSeconds', 60);
                 $sleep = $this->workloadInt($queue, 'sleep', 30);
                 $processes = $this->workloadInt($queue, 'processes', 1);
                 $maximumTries = $this->workloadInt($queue, 'maxTries', 1);
-                $found = false;
-
-                foreach ($existing as $worker) {
-                    if (($worker->connection ?? null) === $connection
-                        && ($worker->queue ?? null) === $name
-                        && (int) ($worker->maximum_seconds ?? -1) === $maximumSeconds
+                $matchingWorker = null;
+                foreach ($matches as $worker) {
+                    if ((int) ($worker->maximum_seconds ?? -1) === $maximumSeconds
                         && (int) ($worker->sleep ?? -1) === $sleep
                         && (int) ($worker->processes ?? -1) === $processes
                         && (int) ($worker->maximum_tries ?? -1) === $maximumTries) {
-                        $found = true;
+                        $matchingWorker = $worker;
                         break;
                     }
                 }
 
-                if (! $found) {
-                    $resource->create($connection, $name, $maximumSeconds, $sleep, $processes, $maximumTries);
+                if ($matchingWorker !== null) {
+                    foreach ($matches as $worker) {
+                        if ($worker !== $matchingWorker) {
+                            $this->deleteWorkloadResource($resource, $worker);
+                        }
+                    }
+                    continue;
+                }
+
+                foreach ($matches as $worker) {
+                    $this->deleteWorkloadResource($resource, $worker);
+                }
+
+                $resource->create($connection, $name, $maximumSeconds, $sleep, $processes, $maximumTries);
+            }
+
+            foreach ($existingByKey as $key => $workers) {
+                if (! isset($handledKeys[$key])) {
+                    foreach ($workers as $worker) {
+                        $this->deleteWorkloadResource($resource, $worker);
+                    }
                 }
             }
 
@@ -720,37 +777,58 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @return array{success: bool, message: string} */
     protected function applyCron(object $project, object $profile): array
     {
-        $cron = $this->configuredWorkloads($project, 'cron');
-        if ($cron === []) {
-            return ['success' => true, 'message' => 'No cron jobs to configure'];
-        }
-
         try {
             $resource = $this->getClient()->server($this->lastServerId)->cronjobs();
             $existing = $this->paginatedData($resource);
+            $prefix = $this->workloadMarkerPrefix($project, $profile);
+            $handledMarkers = [];
+            $cron = $this->configuredWorkloads($project, 'cron');
             foreach ($cron as $name => $job) {
+                $marker = $this->workloadMarker($project, $profile, (string) $name);
+                $handledMarkers[$marker] = true;
+                $matches = \array_values(\array_filter($existing, fn (object $existingJob): bool => \is_string($existingJob->command ?? null) && \str_contains($existingJob->command, $marker)));
+
                 if (! $this->workloadEnabled($job)) {
+                    foreach ($matches as $existingJob) {
+                        $this->deleteWorkloadResource($resource, $existingJob);
+                    }
                     continue;
                 }
 
-                $marker = $this->workloadMarker($project, $profile, (string) $name);
                 $command = \str_replace('{site}', $this->profileDomain($profile), $this->workloadString($job, 'command'));
                 $managedCommand = \rtrim($command).$marker;
-                $found = false;
-
-                foreach ($existing as $existingJob) {
-                    if (($existingJob->command ?? null) === $managedCommand) {
-                        $found = true;
+                $frequency = $this->workloadString($job, 'frequency', 'daily');
+                $user = $this->workloadString($job, 'user', 'ploi');
+                $matchingJob = null;
+                foreach ($matches as $existingJob) {
+                    if (($existingJob->command ?? null) === $managedCommand
+                        && ($existingJob->frequency ?? null) === $frequency
+                        && ($existingJob->user ?? null) === $user) {
+                        $matchingJob = $existingJob;
                         break;
                     }
                 }
 
-                if (! $found) {
-                    $resource->create(
-                        $managedCommand,
-                        $this->workloadString($job, 'frequency', 'daily'),
-                        $this->workloadString($job, 'user', 'ploi'),
-                    );
+                if ($matchingJob !== null) {
+                    foreach ($matches as $existingJob) {
+                        if ($existingJob !== $matchingJob) {
+                            $this->deleteWorkloadResource($resource, $existingJob);
+                        }
+                    }
+                    continue;
+                }
+
+                foreach ($matches as $existingJob) {
+                    $this->deleteWorkloadResource($resource, $existingJob);
+                }
+
+                $resource->create($managedCommand, $frequency, $user);
+            }
+
+            foreach ($existing as $existingJob) {
+                $marker = $this->extractWorkloadMarker($existingJob->command ?? null, $prefix);
+                if ($marker !== null && ! isset($handledMarkers[$marker])) {
+                    $this->deleteWorkloadResource($resource, $existingJob);
                 }
             }
 
@@ -763,39 +841,60 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @return array{success: bool, message: string} */
     protected function applyDaemons(object $project, object $profile): array
     {
-        $daemons = $this->configuredWorkloads($project, 'daemons');
-        if ($daemons === []) {
-            return ['success' => true, 'message' => 'No daemons to configure'];
-        }
-
         try {
             $resource = $this->getClient()->server($this->lastServerId)->daemons();
             $existing = $this->paginatedData($resource);
+            $prefix = $this->workloadMarkerPrefix($project, $profile);
+            $handledMarkers = [];
+            $daemons = $this->configuredWorkloads($project, 'daemons');
             foreach ($daemons as $name => $daemon) {
+                $marker = $this->workloadMarker($project, $profile, (string) $name);
+                $handledMarkers[$marker] = true;
+                $matches = \array_values(\array_filter($existing, fn (object $existingDaemon): bool => \is_string($existingDaemon->command ?? null) && \str_contains($existingDaemon->command, $marker)));
+
                 if (! $this->workloadEnabled($daemon)) {
+                    foreach ($matches as $existingDaemon) {
+                        $this->deleteWorkloadResource($resource, $existingDaemon);
+                    }
                     continue;
                 }
 
-                $marker = $this->workloadMarker($project, $profile, (string) $name);
                 $command = \str_replace('{site}', $this->profileDomain($profile), $this->workloadString($daemon, 'command'));
                 $managedCommand = \rtrim($command).$marker;
-                $found = false;
-
-                foreach ($existing as $existingDaemon) {
-                    if (($existingDaemon->command ?? null) === $managedCommand) {
-                        $found = true;
+                $directory = \str_replace('{site}', $this->profileDomain($profile), $this->workloadString($daemon, 'directory'));
+                $user = $this->workloadString($daemon, 'user', 'ploi');
+                $processes = $this->workloadInt($daemon, 'processes', 1);
+                $matchingDaemon = null;
+                foreach ($matches as $existingDaemon) {
+                    if (($existingDaemon->command ?? null) === $managedCommand
+                        && ($existingDaemon->user ?? $existingDaemon->system_user ?? null) === $user
+                        && (int) ($existingDaemon->processes ?? -1) === $processes
+                        && ($existingDaemon->directory ?? null) === ($directory !== '' ? $directory : null)) {
+                        $matchingDaemon = $existingDaemon;
                         break;
                     }
                 }
 
-                if (! $found) {
-                    $directory = \str_replace('{site}', $this->profileDomain($profile), $this->workloadString($daemon, 'directory'));
-                    $resource->create(
-                        $managedCommand,
-                        $this->workloadString($daemon, 'user', 'ploi'),
-                        $this->workloadInt($daemon, 'processes', 1),
-                        $directory !== '' ? $directory : null,
-                    );
+                if ($matchingDaemon !== null) {
+                    foreach ($matches as $existingDaemon) {
+                        if ($existingDaemon !== $matchingDaemon) {
+                            $this->deleteWorkloadResource($resource, $existingDaemon);
+                        }
+                    }
+                    continue;
+                }
+
+                foreach ($matches as $existingDaemon) {
+                    $this->deleteWorkloadResource($resource, $existingDaemon);
+                }
+
+                $resource->create($managedCommand, $user, $processes, $directory !== '' ? $directory : null);
+            }
+
+            foreach ($existing as $existingDaemon) {
+                $marker = $this->extractWorkloadMarker($existingDaemon->command ?? null, $prefix);
+                if ($marker !== null && ! isset($handledMarkers[$marker])) {
+                    $this->deleteWorkloadResource($resource, $existingDaemon);
                 }
             }
 
@@ -834,7 +933,37 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
     private function workloadMarker(object $project, object $profile, string $name): string
     {
-        return ' # shippercli-managed-'.$this->slugify($this->projectName($project)).'-'.$this->slugify($this->profileName($profile)).'-'.$this->slugify($name);
+        return $this->workloadMarkerPrefix($project, $profile).$this->slugify($name);
+    }
+
+    private function workloadMarkerPrefix(object $project, object $profile): string
+    {
+        return ' # shippercli-managed-'.$this->slugify($this->projectName($project)).'-'.$this->slugify($this->profileName($profile)).'-';
+    }
+
+    private function extractWorkloadMarker(mixed $command, string $prefix): ?string
+    {
+        if (! \is_string($command)) {
+            return null;
+        }
+
+        $position = \strpos($command, $prefix);
+
+        return $position === false ? null : \substr($command, $position);
+    }
+
+    private function queueKey(mixed $connection, mixed $queue): string
+    {
+        return (string) $connection."\0".(string) $queue;
+    }
+
+    private function deleteWorkloadResource(object $resource, object $workload): void
+    {
+        if (! \property_exists($workload, 'id') || ! \is_numeric($workload->id)) {
+            throw new \RuntimeException('Ploi workload resource is missing an ID and cannot be reconciled');
+        }
+
+        $resource((int) $workload->id)->delete();
     }
 
     /** @param array<string, mixed> $variables */

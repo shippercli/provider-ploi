@@ -7,9 +7,12 @@ use Ploi\Http\Response;
 use Ploi\Ploi;
 use Ploi\Resources\Alias;
 use Ploi\Resources\Certificate;
+use Ploi\Resources\Cronjob;
+use Ploi\Resources\Daemon;
 use Ploi\Resources\Database;
 use Ploi\Resources\Deployment;
 use Ploi\Resources\Environment;
+use Ploi\Resources\Queue;
 use Ploi\Resources\Repository;
 use Ploi\Resources\Server;
 use Ploi\Resources\Site;
@@ -945,6 +948,31 @@ test('validation rejects parsed resources that Ploi does not apply', function ()
         ->toContain('Ploi provider does not yet support configured php_version');
 });
 
+test('validation rejects enabled cron jobs and daemons without commands', function (): void {
+    $project = new class
+    {
+        public function cron(): array
+        {
+            return ['scheduler' => new class {
+                public function command(): string { return ''; }
+            }];
+        }
+
+        public function daemons(): array
+        {
+            return ['horizon' => new class {
+                public function command(): string { return ''; }
+            }];
+        }
+    };
+
+    $errors = (new PloiProvider(['api_key' => 'token', 'server_id' => '123']))->validate($project, makePluginProfile());
+
+    expect($errors)
+        ->toContain('Ploi configured cron jobs entry scheduler requires a non-empty command')
+        ->toContain('Ploi configured daemons entry horizon requires a non-empty command');
+});
+
 test('plan includes configured Ploi queue workers, cron jobs, and daemons', function (): void {
     $project = new class
     {
@@ -963,6 +991,139 @@ test('plan includes configured Ploi queue workers, cron jobs, and daemons', func
         ->toContain('Create or reuse queue worker: emails')
         ->toContain('Create or reuse cron job: scheduler')
         ->toContain('Create or reuse daemon: horizon');
+});
+
+test('queue reconciliation replaces drift and removes unconfigured workers', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $site = m::mock(Site::class);
+    $resource = m::mock(Queue::class);
+    $existingWorker = (object) [
+        'id' => 7,
+        'connection' => 'database',
+        'queue' => 'default',
+        'maximum_seconds' => 60,
+        'sleep' => 30,
+        'processes' => 1,
+        'maximum_tries' => 1,
+    ];
+    $removedWorker = (object) [
+        'id' => 8,
+        'connection' => 'redis',
+        'queue' => 'old',
+        'maximum_seconds' => 60,
+        'sleep' => 30,
+        'processes' => 1,
+        'maximum_tries' => 1,
+    ];
+    $response = m::mock(Response::class);
+    $response->shouldReceive('getJson')->once()->andReturn((object) [
+        'data' => [$existingWorker, $removedWorker],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $resource->shouldReceive('page')->with(1, 50)->once()->andReturn($response);
+    $resource->shouldReceive('create')->with('database', 'default', 60, 30, 3, 1)->once();
+    $deleteResource = m::mock(Queue::class);
+    $deleteResource->shouldReceive('delete')->twice()->andReturn(m::mock(Response::class));
+    $site->shouldReceive('queues')->withNoArgs()->once()->andReturn($resource);
+    $site->shouldReceive('queues')->with(7)->once()->andReturn($deleteResource);
+    $site->shouldReceive('queues')->with(8)->once()->andReturn($deleteResource);
+    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        public function configureQueues(object $project, object $profile): array
+        {
+            return $this->applyQueues($project, $profile);
+        }
+    };
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 55);
+
+    $project = new class
+    {
+        public function name(): string { return 'api'; }
+        public function queues(): array { return ['emails' => new class {
+            public function connection(): string { return 'database'; }
+            public function queue(): string { return 'default'; }
+            public function processes(): int { return 3; }
+        }]; }
+    };
+
+    expect($provider->configureQueues($project, makePluginProfile()))->toMatchArray(['success' => true]);
+});
+
+test('workload reconciliation removes stale marked cron jobs and daemons', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $cronResource = m::mock(Cronjob::class);
+    $daemonResource = m::mock(Daemon::class);
+    $cronResponse = m::mock(Response::class);
+    $daemonResponse = m::mock(Response::class);
+    $cronResponse->shouldReceive('getJson')->once()->andReturn((object) [
+        'data' => [(object) ['id' => 11, 'command' => 'php artisan schedule:run # shippercli-managed-api-preview-old']],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $daemonResponse->shouldReceive('getJson')->once()->andReturn((object) [
+        'data' => [(object) ['id' => 12, 'command' => 'php artisan horizon # shippercli-managed-api-preview-old']],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $cronResource->shouldReceive('page')->with(1, 50)->once()->andReturn($cronResponse);
+    $daemonResource->shouldReceive('page')->with(1, 50)->once()->andReturn($daemonResponse);
+    $cronDelete = m::mock(Cronjob::class);
+    $daemonDelete = m::mock(Daemon::class);
+    $cronDelete->shouldReceive('delete')->once()->andReturn(m::mock(Response::class));
+    $daemonDelete->shouldReceive('delete')->once()->andReturn(m::mock(Response::class));
+    $server->shouldReceive('cronjobs')->withNoArgs()->once()->andReturn($cronResource);
+    $server->shouldReceive('cronjobs')->with(11)->once()->andReturn($cronDelete);
+    $server->shouldReceive('daemons')->withNoArgs()->once()->andReturn($daemonResource);
+    $server->shouldReceive('daemons')->with(12)->once()->andReturn($daemonDelete);
+    $client->shouldReceive('server')->with(123)->twice()->andReturn($server);
+
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        public function configureCron(object $project, object $profile): array
+        {
+            return $this->applyCron($project, $profile);
+        }
+
+        public function configureDaemons(object $project, object $profile): array
+        {
+            return $this->applyDaemons($project, $profile);
+        }
+    };
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 55);
+    $project = new class
+    {
+        public function name(): string { return 'api'; }
+        public function cron(): array { return []; }
+        public function daemons(): array { return []; }
+    };
+
+    expect($provider->configureCron($project, makePluginProfile()))->toMatchArray(['success' => true])
+        ->and($provider->configureDaemons($project, makePluginProfile()))->toMatchArray(['success' => true]);
 });
 
 test('post-apply invokes mocked workload provisioning in order', function (): void {
@@ -1000,11 +1161,16 @@ test('post-apply invokes mocked workload provisioning in order', function (): vo
 
             return ['success' => true, 'message' => 'daemons'];
         }
+
+        public function configureWorkloads(object $project, object $profile): array
+        {
+            return $this->applyWorkloads($project, $profile);
+        }
     };
     (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
     (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 55);
 
-    $result = $provider->postApply(makePluginProject(), makePluginProfile());
+    $result = $provider->configureWorkloads(makePluginProject(), makePluginProfile());
 
     expect($result['success'])->toBeTrue()
         ->and($operations)->toBe(['queues', 'cron', 'daemons']);
