@@ -10,6 +10,7 @@ use Ploi\Resources\Certificate;
 use Ploi\Resources\Database;
 use Ploi\Resources\Deployment;
 use Ploi\Resources\Environment;
+use Ploi\Resources\NginxConfiguration;
 use Ploi\Resources\Repository;
 use Ploi\Resources\Server;
 use Ploi\Resources\Site;
@@ -943,7 +944,7 @@ test('post-apply updates site NGINX configuration through the mocked Ploi API', 
     $client = m::mock(Ploi::class);
     $server = m::mock(Server::class);
     $site = m::mock(Site::class);
-    $nginx = m::mock();
+    $nginx = m::mock(NginxConfiguration::class);
     $nginx->shouldReceive('update')->with('location / { try_files $uri $uri/ /index.php?$query_string; }')->once();
     $site->shouldReceive('nginxConfiguration')->once()->andReturn($nginx);
     $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
