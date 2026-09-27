@@ -969,29 +969,34 @@ test('post-apply invokes mocked workload provisioning in order', function (): vo
     $operations = [];
     $provider = new class($operations) extends PloiProvider
     {
+        /** @var array<int, string> */
+        private array $capturedOperations;
+
         /** @param array<int, string> $operations */
-        public function __construct(private array &$operations)
+        public function __construct(array &$operations)
         {
+            $this->capturedOperations =& $operations;
+
             parent::__construct(['api_key' => 'token', 'server_id' => '123']);
         }
 
         protected function applyQueues(object $project, object $profile): array
         {
-            $this->operations[] = 'queues';
+            $this->capturedOperations[] = 'queues';
 
             return ['success' => true, 'message' => 'queues'];
         }
 
         protected function applyCron(object $project, object $profile): array
         {
-            $this->operations[] = 'cron';
+            $this->capturedOperations[] = 'cron';
 
             return ['success' => true, 'message' => 'cron'];
         }
 
         protected function applyDaemons(object $project, object $profile): array
         {
-            $this->operations[] = 'daemons';
+            $this->capturedOperations[] = 'daemons';
 
             return ['success' => true, 'message' => 'daemons'];
         }
