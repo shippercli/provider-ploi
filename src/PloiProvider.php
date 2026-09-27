@@ -446,6 +446,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 }
             }
 
+            $this->removeManagedWorkloads($server, $project, $profile);
             $response = $server->sites($siteId)->delete();
             $message = $response->getJson()->message ?? null;
             if (\is_string($message)) {
@@ -796,7 +797,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             foreach ($cron as $name => $job) {
                 $marker = $this->workloadMarker($project, $profile, (string) $name);
                 $handledMarkers[$marker] = true;
-                $matches = \array_values(\array_filter($existing, fn (object $existingJob): bool => \is_string($existingJob->command ?? null) && \str_contains($existingJob->command, $marker)));
+                $matches = \array_values(\array_filter($existing, fn (object $existingJob): bool => $this->extractWorkloadMarker($existingJob->command ?? null, $prefix) === $marker));
 
                 if (! $this->workloadEnabled($job)) {
                     foreach ($matches as $existingJob) {
@@ -865,7 +866,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             foreach ($daemons as $name => $daemon) {
                 $marker = $this->workloadMarker($project, $profile, (string) $name);
                 $handledMarkers[$marker] = true;
-                $matches = \array_values(\array_filter($existing, fn (object $existingDaemon): bool => \is_string($existingDaemon->command ?? null) && \str_contains($existingDaemon->command, $marker)));
+                $matches = \array_values(\array_filter($existing, fn (object $existingDaemon): bool => $this->extractWorkloadMarker($existingDaemon->command ?? null, $prefix) === $marker));
 
                 if (! $this->workloadEnabled($daemon)) {
                     foreach ($matches as $existingDaemon) {
@@ -962,9 +963,32 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             return null;
         }
 
-        $position = \strpos($command, $prefix);
+        $pattern = '/'.\preg_quote($prefix, '/').'([a-z0-9-]+)(?=\s*$)/';
+        if (\preg_match($pattern, $command, $matches) !== 1) {
+            return null;
+        }
 
-        return $position === false ? null : \substr($command, $position);
+        return $prefix.$matches[1];
+    }
+
+    private function removeManagedWorkloads(object $server, object $project, object $profile): void
+    {
+        $prefix = $this->workloadMarkerPrefix($project, $profile);
+        foreach (['cronjobs' => 'cron', 'daemons' => 'daemons'] as $method => $configurationMethod) {
+            if (! method_exists($project, $configurationMethod)) {
+                continue;
+            }
+            $resource = $server->{$method}();
+            foreach ($this->paginatedData($resource) as $workload) {
+                if ($this->extractWorkloadMarker($workload->command ?? null, $prefix) === null) {
+                    continue;
+                }
+                if (! \property_exists($workload, 'id') || ! \is_numeric($workload->id)) {
+                    throw new \RuntimeException('Ploi workload resource is missing an ID and cannot be removed');
+                }
+                $server->{$method}((int) $workload->id)->delete();
+            }
+        }
     }
 
     private function queueKey(mixed $connection, mixed $queue): string
