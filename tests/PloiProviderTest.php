@@ -25,7 +25,7 @@ test('provider declares capability states explicitly', function (): void {
     $capabilities = (new PloiProvider)->capabilities();
 
     expect($capabilities['app_deploy']['state'])->toBe('supported')
-        ->and($capabilities['server_lifecycle']['state'])->toBe('partial')
+        ->and($capabilities['server_lifecycle']['state'])->toBe('supported')
         ->and($capabilities['previews']['state'])->toBe('supported')
         ->and($capabilities['rollback']['state'])->toBe('unsupported');
 });

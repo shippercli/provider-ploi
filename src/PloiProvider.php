@@ -52,7 +52,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     {
         return [
             'app_deploy' => ['state' => 'supported'],
-            'server_lifecycle' => ['state' => 'partial', 'notes' => 'Server creation and ownership-safe cleanup follow the Ploi API structure and require live account verification.'],
+            'server_lifecycle' => ['state' => 'supported', 'notes' => 'Creates and reuses Shipper-managed servers; cleanup is limited to servers explicitly marked as Shipper-managed.'],
             'domain_management' => ['state' => 'supported'],
             'ssl' => ['state' => 'supported'],
             'databases' => ['state' => 'supported'],
