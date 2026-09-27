@@ -710,6 +710,55 @@ test('provider package reconciles network rules with the core fromIp value', fun
         ->toMatchArray(['success' => true, 'message' => 'Ploi post-apply configuration completed']);
 });
 
+test('provider package applies a supported PHP version only when it changes', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $site = m::mock(Site::class);
+    $versionsResponse = m::mock(Response::class);
+    $siteResponse = m::mock(Response::class);
+    $versionsResponse->shouldReceive('getJson')->once()->andReturn((object) [
+        'data' => [(object) ['version' => '8.3'], (object) ['version' => '8.4']],
+    ]);
+    $siteResponse->shouldReceive('getJson')->once()->andReturn((object) [
+        'data' => (object) ['php_version' => '8.3'],
+    ]);
+    $server->shouldReceive('phpVersions')->once()->andReturn($versionsResponse);
+    $server->shouldReceive('sites')->with(456)->once()->andReturn($site);
+    $site->shouldReceive('get')->once()->andReturn($siteResponse);
+    $site->shouldReceive('phpVersion')->once()->with('8.4');
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        protected function applyAliases(object $profile): array { return ['success' => true, 'message' => 'ok']; }
+        protected function applyDeployScript(object $project, object $profile): array { return ['success' => true, 'message' => 'ok']; }
+        protected function applyEnvironment(object $project, object $profile): array { return ['success' => true, 'message' => 'ok']; }
+        protected function applySsl(object $project, object $profile): array { return ['success' => true, 'message' => 'ok']; }
+        protected function deploymentLogs(int $serverId, int $siteId): array { return []; }
+    };
+
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 456);
+
+    $project = new class
+    {
+        public function phpVersion(): string { return '8.4'; }
+    };
+
+    expect($provider->postApply($project, new stdClass))
+        ->toMatchArray(['success' => true, 'message' => 'Ploi post-apply configuration completed']);
+});
+
 test('provider package lists sites across every page', function (): void {
     $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
     $lifecycleClient->shouldReceive('get')->with(123)->once()->andReturn((object) ['id' => 123]);
@@ -1091,7 +1140,7 @@ test('generated database credentials are merged into the site environment', func
         ->and($capturedEnvironment)->toContain('DB_PASSWORD=generated-secret');
 });
 
-test('validation rejects parsed resources that Ploi does not apply', function (): void {
+test('validation accepts a supported PHP version shape', function (): void {
     $project = new class
     {
         public function repository(): array
@@ -1112,7 +1161,7 @@ test('validation rejects parsed resources that Ploi does not apply', function ()
     $provider = new PloiProvider(['api_key' => 'token', 'server_id' => '123']);
 
     expect($provider->validate($project, makePluginProfile()))
-        ->toContain('Ploi provider does not yet support configured php_version');
+        ->not->toContain('Ploi provider does not yet support configured php_version');
 });
 
 test('validation rejects enabled cron jobs and daemons without commands', function (): void {

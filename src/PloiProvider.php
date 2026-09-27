@@ -160,7 +160,9 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
         $phpVersion = \method_exists($project, 'phpVersion') ? $project->phpVersion() : '';
         if (\is_string($phpVersion) && $phpVersion !== '') {
-            $errors[] = 'Ploi provider does not yet support configured php_version';
+            if (\preg_match('/^\d+\.\d+$/', $phpVersion) !== 1) {
+                $errors[] = 'Ploi configured php_version must use the major.minor format';
+            }
         }
 
         $nginxConfig = \method_exists($project, 'nginxConfig') ? $project->nginxConfig() : '';
@@ -555,6 +557,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $this->applyDeployScript($project, $profile),
             $this->applyEnvironment($project, $profile),
             $this->applySsl($project, $profile),
+            $this->applyPhpVersion($project),
             $this->applyRedirects($project),
             $this->applyNetworkRules($project, $profile),
         ];
@@ -736,6 +739,51 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             return ['success' => true, 'message' => 'SSL certificate created successfully'];
         } catch (\Throwable $exception) {
             return ['success' => false, 'message' => 'Failed to create SSL certificate: '.$exception->getMessage()];
+        }
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applyPhpVersion(object $project): array
+    {
+        $phpVersion = \method_exists($project, 'phpVersion') ? $project->phpVersion() : '';
+        if (! \is_string($phpVersion) || $phpVersion === '') {
+            return ['success' => true, 'message' => 'No PHP version to configure'];
+        }
+
+        try {
+            $server = $this->getClient()->server($this->lastServerId);
+            $available = $server->phpVersions()->getJson()->data ?? [];
+            $availableVersions = [];
+            foreach (\is_array($available) ? $available : [] as $version) {
+                if (\is_string($version)) {
+                    $availableVersions[] = $version;
+                } elseif (\is_object($version)) {
+                    foreach (['version', 'name', 'value'] as $property) {
+                        if (\property_exists($version, $property) && \is_string($version->{$property})) {
+                            $availableVersions[] = $version->{$property};
+                            break;
+                        }
+                    }
+                }
+            }
+            if ($availableVersions === [] || ! \in_array($phpVersion, $availableVersions, true)) {
+                return ['success' => false, 'message' => "Ploi server does not advertise PHP version {$phpVersion}"];
+            }
+
+            $site = $server->sites($this->lastSiteId);
+            $siteData = $site->get()->getJson()->data ?? null;
+            $current = \is_object($siteData) && \property_exists($siteData, 'php_version')
+                ? $siteData->php_version
+                : null;
+            if ((string) $current === $phpVersion) {
+                return ['success' => true, 'message' => 'PHP version already configured'];
+            }
+
+            $site->phpVersion($phpVersion);
+
+            return ['success' => true, 'message' => 'PHP version configured successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to configure PHP version: '.$exception->getMessage()];
         }
     }
 
