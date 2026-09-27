@@ -10,14 +10,20 @@ Current scope includes:
 - create preview or temporary servers on demand
 - optional cleanup for Shipper-created preview infrastructure
 - provider-owned alias, deploy-script, environment, and SSL post-apply configuration
+- provider-owned queue workers, cron jobs, and daemon processes through the Ploi API
 - `shipper status` and `shipper logs` support
 
 Rollback is not currently supported by Ploi and is reported as unavailable by
 `shipper rollback`.
 
-Queues, cron jobs, daemons, network rules, redirects, `php_version`, and
-`nginx_config` are not yet applied by this provider. Validation rejects a
-project that configures any of these fields instead of silently ignoring them.
+Network rules, redirects, `php_version`, and `nginx_config` are not yet applied
+by this provider. Validation rejects a project that configures any of these
+fields instead of silently ignoring them.
+
+Queue workers, cron jobs, and daemons are created idempotently during
+post-apply. Cron and daemon commands carry a Shipper marker so they can be
+recognized on subsequent applies; queue workers are matched by their complete
+provider configuration. Existing unrelated Ploi workloads are never removed.
 
 Ploi accepts `site_id` when a database is created but does not publish an API
 operation for attaching an already-existing database to a different site. If a

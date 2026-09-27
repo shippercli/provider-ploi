@@ -27,6 +27,7 @@ test('provider declares capability states explicitly', function (): void {
 
     expect($capabilities['app_deploy']['state'])->toBe('supported')
         ->and($capabilities['server_lifecycle']['state'])->toBe('partial')
+        ->and($capabilities['background_workloads']['state'])->toBe('supported')
         ->and($capabilities['rollback']['state'])->toBe('unsupported');
 });
 
@@ -941,8 +942,67 @@ test('validation rejects parsed resources that Ploi does not apply', function ()
     $provider = new PloiProvider(['api_key' => 'token', 'server_id' => '123']);
 
     expect($provider->validate($project, makePluginProfile()))
-        ->toContain('Ploi provider does not yet support configured cron jobs')
         ->toContain('Ploi provider does not yet support configured php_version');
+});
+
+test('plan includes configured Ploi queue workers, cron jobs, and daemons', function (): void {
+    $project = new class
+    {
+        public function name(): string { return 'api'; }
+        public function path(): string { return './api'; }
+        public function repository(): array { return ['provider' => 'github', 'name' => 'shippercli/cli']; }
+        public function queues(): array { return ['emails' => (object) ['enabled' => fn (): bool => true]]; }
+        public function cron(): array { return ['scheduler' => (object) ['enabled' => fn (): bool => true]]; }
+        public function daemons(): array { return ['horizon' => (object) ['enabled' => fn (): bool => true]]; }
+    };
+    $provider = new PloiProvider(['api_key' => 'token', 'server_id' => '123']);
+
+    $plan = $provider->plan($project, makePluginProfile());
+
+    expect($plan['actions'])
+        ->toContain('Create or reuse queue worker: emails')
+        ->toContain('Create or reuse cron job: scheduler')
+        ->toContain('Create or reuse daemon: horizon');
+});
+
+test('post-apply invokes mocked workload provisioning in order', function (): void {
+    $operations = [];
+    $provider = new class($operations) extends PloiProvider
+    {
+        /** @param array<int, string> $operations */
+        public function __construct(private array &$operations)
+        {
+            parent::__construct(['api_key' => 'token', 'server_id' => '123']);
+        }
+
+        protected function applyQueues(object $project, object $profile): array
+        {
+            $this->operations[] = 'queues';
+
+            return ['success' => true, 'message' => 'queues'];
+        }
+
+        protected function applyCron(object $project, object $profile): array
+        {
+            $this->operations[] = 'cron';
+
+            return ['success' => true, 'message' => 'cron'];
+        }
+
+        protected function applyDaemons(object $project, object $profile): array
+        {
+            $this->operations[] = 'daemons';
+
+            return ['success' => true, 'message' => 'daemons'];
+        }
+    };
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 55);
+
+    $result = $provider->postApply(makePluginProject(), makePluginProfile());
+
+    expect($result['success'])->toBeTrue()
+        ->and($operations)->toBe(['queues', 'cron', 'daemons']);
 });
 
 test('post-apply creates only missing aliases and passes force https to SSL', function (): void {
