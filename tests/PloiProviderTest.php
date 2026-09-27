@@ -13,6 +13,7 @@ use Ploi\Resources\Database;
 use Ploi\Resources\Deployment;
 use Ploi\Resources\Environment;
 use Ploi\Resources\NetworkRule;
+use Ploi\Resources\NginxConfiguration;
 use Ploi\Resources\Queue;
 use Ploi\Resources\Redirect;
 use Ploi\Resources\Repository;
@@ -753,6 +754,52 @@ test('provider package applies a supported PHP version only when it changes', fu
     $project = new class
     {
         public function phpVersion(): string { return '8.4'; }
+    };
+
+    expect($provider->postApply($project, new stdClass))
+        ->toMatchArray(['success' => true, 'message' => 'Ploi post-apply configuration completed']);
+});
+
+test('provider package applies a changed complete NGINX configuration', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $site = m::mock(Site::class);
+    $configuration = m::mock(NginxConfiguration::class);
+    $response = m::mock(Response::class);
+    $response->shouldReceive('getJson')->once()->andReturn((object) [
+        'data' => (object) ['content' => 'server { listen 80; }'],
+    ]);
+    $configuration->shouldReceive('get')->once()->andReturn($response);
+    $configuration->shouldReceive('update')->once()->with('server { listen 443; }');
+    $site->shouldReceive('nginxConfiguration')->once()->andReturn($configuration);
+    $server->shouldReceive('sites')->with(456)->once()->andReturn($site);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        protected function applyAliases(object $profile): array { return ['success' => true, 'message' => 'ok']; }
+        protected function applyDeployScript(object $project, object $profile): array { return ['success' => true, 'message' => 'ok']; }
+        protected function applyEnvironment(object $project, object $profile): array { return ['success' => true, 'message' => 'ok']; }
+        protected function applySsl(object $project, object $profile): array { return ['success' => true, 'message' => 'ok']; }
+        protected function deploymentLogs(int $serverId, int $siteId): array { return []; }
+    };
+
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 456);
+
+    $project = new class
+    {
+        public function nginxConfig(): string { return 'server { listen 443; }'; }
     };
 
     expect($provider->postApply($project, new stdClass))
