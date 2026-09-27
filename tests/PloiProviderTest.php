@@ -980,6 +980,56 @@ test('post-apply updates site NGINX configuration through the mocked Ploi API', 
         ->toBe(['success' => true, 'message' => 'NGINX configuration applied successfully']);
 });
 
+test('post-apply creates missing Ploi redirects through the mocked site resource', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $site = m::mock(Site::class);
+    $redirects = m::mock();
+    $response = m::mock(Response::class);
+    $response->shouldReceive('getJson')->once()->andReturn((object) [
+        'data' => [],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $redirects->shouldReceive('page')->with(1, 50)->once()->andReturn($response);
+    $redirects->shouldReceive('create')->with('/old', '/new', 'permanent')->once();
+    $site->shouldReceive('redirects')->once()->andReturn($redirects);
+    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        public function configureRedirects(object $project): array
+        {
+            return $this->applyRedirects($project);
+        }
+    };
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 55);
+    $project = new class
+    {
+        public function redirects(): array
+        {
+            return ['legacy' => new class {
+                public function from(): string { return '/old'; }
+                public function to(): string { return '/new'; }
+                public function type(): string { return 'permanent'; }
+            }];
+        }
+    };
+
+    expect($provider->configureRedirects($project))
+        ->toBe(['success' => true, 'message' => 'Redirects configured successfully']);
+});
+
 test('post-apply creates only missing aliases and passes force https to SSL', function (): void {
     $client = m::mock(Ploi::class);
     $server = m::mock(Server::class);

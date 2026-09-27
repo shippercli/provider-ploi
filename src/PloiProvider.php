@@ -109,7 +109,6 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             'cron' => 'cron jobs',
             'daemons' => 'daemons',
             'networkRules' => 'network rules',
-            'redirects' => 'redirects',
         ];
         foreach ($unsupported as $accessor => $label) {
             $value = \method_exists($project, $accessor) ? $project->{$accessor}() : [];
@@ -171,6 +170,10 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
         $actions[] = 'Deploy site via Ploi API';
         $actions[] = 'Run deployment script';
+
+        if (\method_exists($project, 'redirects') && $project->redirects() !== []) {
+            $actions[] = 'Create or reuse configured redirects';
+        }
 
         $nginxConfig = \method_exists($project, 'nginxConfig') ? $project->nginxConfig() : '';
         if (\is_string($nginxConfig) && $nginxConfig !== '') {
@@ -498,6 +501,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $this->applyAliases($profile),
             $this->applyDeployScript($project, $profile),
             $this->applyEnvironment($project, $profile),
+            $this->applyRedirects($project),
             $this->applyNginxConfiguration($project),
             $this->applySsl($project, $profile),
         ];
@@ -538,6 +542,58 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         } catch (\Throwable $exception) {
             return ['success' => false, 'message' => 'Failed to apply NGINX configuration: '.$exception->getMessage()];
         }
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applyRedirects(object $project): array
+    {
+        $redirects = \method_exists($project, 'redirects') ? $project->redirects() : [];
+        if (! \is_array($redirects) || $redirects === []) {
+            return ['success' => true, 'message' => 'No redirects to configure'];
+        }
+
+        try {
+            $resource = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->redirects();
+            $existing = $this->paginatedData($resource);
+            foreach ($redirects as $name => $redirect) {
+                if (! \is_object($redirect)) {
+                    continue;
+                }
+                $from = $this->redirectValue($redirect, 'from');
+                $to = $this->redirectValue($redirect, 'to');
+                $type = $this->redirectValue($redirect, 'type', 'redirect');
+                if ($from === '' || $to === '') {
+                    throw new \InvalidArgumentException("Redirect {$name} must define from and to");
+                }
+                $found = false;
+                foreach ($existing as $configured) {
+                    if (($configured->from ?? null) === $from
+                        && ($configured->to ?? null) === $to
+                        && (($configured->type ?? 'redirect') === $type)) {
+                        $found = true;
+                        break;
+                    }
+                }
+                if (! $found) {
+                    $resource->create($from, $to, $type);
+                }
+            }
+
+            return ['success' => true, 'message' => 'Redirects configured successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to configure redirects: '.$exception->getMessage()];
+        }
+    }
+
+    private function redirectValue(object $redirect, string $method, string $default = ''): string
+    {
+        if (\method_exists($redirect, $method)) {
+            $value = $redirect->{$method}();
+
+            return \is_string($value) ? $value : $default;
+        }
+
+        return $default;
     }
 
     public function status(object $project, object $profile): array
