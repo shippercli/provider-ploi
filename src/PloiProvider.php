@@ -123,11 +123,6 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $errors[] = 'Ploi provider does not yet support configured php_version';
         }
 
-        $nginxConfig = \method_exists($project, 'nginxConfig') ? $project->nginxConfig() : '';
-        if (\is_string($nginxConfig) && $nginxConfig !== '') {
-            $errors[] = 'Ploi provider does not yet support configured nginx_config';
-        }
-
         return $errors;
     }
 
@@ -176,6 +171,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
         $actions[] = 'Deploy site via Ploi API';
         $actions[] = 'Run deployment script';
+
+        $nginxConfig = \method_exists($project, 'nginxConfig') ? $project->nginxConfig() : '';
+        if (\is_string($nginxConfig) && $nginxConfig !== '') {
+            $actions[] = 'Update site NGINX configuration';
+        }
 
         $note = $server !== null && ($server['mode'] ?? null) === 'create'
             ? 'This may provision a new Ploi server and create a real deployment.'
@@ -498,6 +498,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $this->applyAliases($profile),
             $this->applyDeployScript($project, $profile),
             $this->applyEnvironment($project, $profile),
+            $this->applyNginxConfiguration($project),
             $this->applySsl($project, $profile),
         ];
 
@@ -520,6 +521,23 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             'message' => 'Ploi post-apply configuration completed',
             'logs' => $this->deploymentLogs($this->lastServerId, $this->lastSiteId),
         ];
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applyNginxConfiguration(object $project): array
+    {
+        $configuration = \method_exists($project, 'nginxConfig') ? $project->nginxConfig() : '';
+        if (! \is_string($configuration) || $configuration === '') {
+            return ['success' => true, 'message' => 'No NGINX configuration to apply'];
+        }
+
+        try {
+            $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->nginxConfiguration()->update($configuration);
+
+            return ['success' => true, 'message' => 'NGINX configuration applied successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to apply NGINX configuration: '.$exception->getMessage()];
+        }
     }
 
     public function status(object $project, object $profile): array

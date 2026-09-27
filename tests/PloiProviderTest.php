@@ -939,6 +939,47 @@ test('validation rejects parsed resources that Ploi does not apply', function ()
         ->toContain('Ploi provider does not yet support configured php_version');
 });
 
+test('post-apply updates site NGINX configuration through the mocked Ploi API', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $site = m::mock(Site::class);
+    $nginx = m::mock();
+    $nginx->shouldReceive('update')->with('location / { try_files $uri $uri/ /index.php?$query_string; }')->once();
+    $site->shouldReceive('nginxConfiguration')->once()->andReturn($nginx);
+    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        public function configureNginx(object $project): array
+        {
+            return $this->applyNginxConfiguration($project);
+        }
+    };
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    (new ReflectionProperty(PloiProvider::class, 'lastSiteId'))->setValue($provider, 55);
+
+    $project = new class
+    {
+        public function nginxConfig(): string
+        {
+            return 'location / { try_files $uri $uri/ /index.php?$query_string; }';
+        }
+    };
+
+    expect($provider->configureNginx($project))
+        ->toBe(['success' => true, 'message' => 'NGINX configuration applied successfully']);
+});
+
 test('post-apply creates only missing aliases and passes force https to SSL', function (): void {
     $client = m::mock(Ploi::class);
     $server = m::mock(Server::class);
