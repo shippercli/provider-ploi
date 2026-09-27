@@ -591,6 +591,11 @@ test('provider package creates enabled redirects and skips disabled redirects', 
         {
             return ['success' => true, 'message' => 'ok'];
         }
+
+        protected function deploymentLogs(int $serverId, int $siteId): array
+        {
+            return [];
+        }
     };
 
     (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
