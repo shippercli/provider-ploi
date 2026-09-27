@@ -16,9 +16,11 @@ Current scope includes:
 Rollback is not currently supported by Ploi and is reported as unavailable by
 `shipper rollback`.
 
-`nginx_config` is not yet applied by this provider. Configured `php_version`
-values are checked against the server's advertised PHP versions and applied only
-when the site is currently using a different version. Network rules are
+Configured `php_version` values are checked against the server's advertised PHP
+versions and applied only when the site is currently using a different version.
+`nginx_config` is treated as the complete site NGINX configuration because the
+Ploi API replaces the vhost content; it is applied only when it differs from the
+current configuration. Network rules are
 reconciled with Shipper ownership markers and removed on destroy.
 Redirects are created idempotently; disabled redirects are skipped,
 and conflicting existing redirects are reported instead of modifying unmanaged

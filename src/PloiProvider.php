@@ -166,8 +166,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         $nginxConfig = \method_exists($project, 'nginxConfig') ? $project->nginxConfig() : '';
-        if (\is_string($nginxConfig) && $nginxConfig !== '') {
-            $errors[] = 'Ploi provider does not yet support configured nginx_config';
+        if (! \is_string($nginxConfig)) {
+            $errors[] = 'Ploi configured nginx_config must be a string';
         }
 
         return $errors;
@@ -558,6 +558,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $this->applyEnvironment($project, $profile),
             $this->applySsl($project, $profile),
             $this->applyPhpVersion($project),
+            $this->applyNginxConfig($project),
             $this->applyRedirects($project),
             $this->applyNetworkRules($project, $profile),
         ];
@@ -784,6 +785,29 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             return ['success' => true, 'message' => 'PHP version configured successfully'];
         } catch (\Throwable $exception) {
             return ['success' => false, 'message' => 'Failed to configure PHP version: '.$exception->getMessage()];
+        }
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applyNginxConfig(object $project): array
+    {
+        $nginxConfig = \method_exists($project, 'nginxConfig') ? $project->nginxConfig() : '';
+        if (! \is_string($nginxConfig) || $nginxConfig === '') {
+            return ['success' => true, 'message' => 'No NGINX configuration to apply'];
+        }
+
+        try {
+            $configuration = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->nginxConfiguration();
+            $current = $configuration->get()->getJson()->data->content ?? null;
+            if (\is_string($current) && $current === $nginxConfig) {
+                return ['success' => true, 'message' => 'NGINX configuration already applied'];
+            }
+
+            $configuration->update($nginxConfig);
+
+            return ['success' => true, 'message' => 'NGINX configuration applied successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to apply NGINX configuration: '.$exception->getMessage()];
         }
     }
 
