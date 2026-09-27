@@ -709,7 +709,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         try {
-            $resource = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->queues();
+            $site = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId);
+            $resource = $site->queues();
             $existing = $this->paginatedData($resource);
             $existingByKey = [];
             foreach ($existing as $worker) {
@@ -728,7 +729,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
                 if (! $this->workloadEnabled($queue)) {
                     foreach ($matches as $worker) {
-                        $this->deleteWorkloadResource($resource, $worker);
+                        $this->deleteQueueWorkload($site, $worker);
                     }
                     continue;
                 }
@@ -751,14 +752,14 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 if ($matchingWorker !== null) {
                     foreach ($matches as $worker) {
                         if ($worker !== $matchingWorker) {
-                            $this->deleteWorkloadResource($resource, $worker);
+                            $this->deleteQueueWorkload($site, $worker);
                         }
                     }
                     continue;
                 }
 
                 foreach ($matches as $worker) {
-                    $this->deleteWorkloadResource($resource, $worker);
+                    $this->deleteQueueWorkload($site, $worker);
                 }
 
                 $resource->create($connection, $name, $maximumSeconds, $sleep, $processes, $maximumTries);
@@ -767,7 +768,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             foreach ($existingByKey as $key => $workers) {
                 if (! isset($handledKeys[$key])) {
                     foreach ($workers as $worker) {
-                        $this->deleteWorkloadResource($resource, $worker);
+                        $this->deleteQueueWorkload($site, $worker);
                     }
                 }
             }
@@ -786,7 +787,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         try {
-            $resource = $this->getClient()->server($this->lastServerId)->cronjobs();
+            $server = $this->getClient()->server($this->lastServerId);
+            $resource = $server->cronjobs();
             $existing = $this->paginatedData($resource);
             $prefix = $this->workloadMarkerPrefix($project, $profile);
             $handledMarkers = [];
@@ -798,7 +800,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
                 if (! $this->workloadEnabled($job)) {
                     foreach ($matches as $existingJob) {
-                        $this->deleteWorkloadResource($resource, $existingJob);
+                        $this->deleteCronWorkload($server, $existingJob);
                     }
                     continue;
                 }
@@ -820,14 +822,14 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 if ($matchingJob !== null) {
                     foreach ($matches as $existingJob) {
                         if ($existingJob !== $matchingJob) {
-                            $this->deleteWorkloadResource($resource, $existingJob);
+                            $this->deleteCronWorkload($server, $existingJob);
                         }
                     }
                     continue;
                 }
 
                 foreach ($matches as $existingJob) {
-                    $this->deleteWorkloadResource($resource, $existingJob);
+                    $this->deleteCronWorkload($server, $existingJob);
                 }
 
                 $resource->create($managedCommand, $frequency, $user);
@@ -836,7 +838,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             foreach ($existing as $existingJob) {
                 $marker = $this->extractWorkloadMarker($existingJob->command ?? null, $prefix);
                 if ($marker !== null && ! isset($handledMarkers[$marker])) {
-                    $this->deleteWorkloadResource($resource, $existingJob);
+                    $this->deleteCronWorkload($server, $existingJob);
                 }
             }
 
@@ -854,7 +856,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         try {
-            $resource = $this->getClient()->server($this->lastServerId)->daemons();
+            $server = $this->getClient()->server($this->lastServerId);
+            $resource = $server->daemons();
             $existing = $this->paginatedData($resource);
             $prefix = $this->workloadMarkerPrefix($project, $profile);
             $handledMarkers = [];
@@ -866,7 +869,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
                 if (! $this->workloadEnabled($daemon)) {
                     foreach ($matches as $existingDaemon) {
-                        $this->deleteWorkloadResource($resource, $existingDaemon);
+                        $this->deleteDaemonWorkload($server, $existingDaemon);
                     }
                     continue;
                 }
@@ -890,14 +893,14 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 if ($matchingDaemon !== null) {
                     foreach ($matches as $existingDaemon) {
                         if ($existingDaemon !== $matchingDaemon) {
-                            $this->deleteWorkloadResource($resource, $existingDaemon);
+                            $this->deleteDaemonWorkload($server, $existingDaemon);
                         }
                     }
                     continue;
                 }
 
                 foreach ($matches as $existingDaemon) {
-                    $this->deleteWorkloadResource($resource, $existingDaemon);
+                    $this->deleteDaemonWorkload($server, $existingDaemon);
                 }
 
                 $resource->create($managedCommand, $user, $processes, $directory !== '' ? $directory : null);
@@ -906,7 +909,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             foreach ($existing as $existingDaemon) {
                 $marker = $this->extractWorkloadMarker($existingDaemon->command ?? null, $prefix);
                 if ($marker !== null && ! isset($handledMarkers[$marker])) {
-                    $this->deleteWorkloadResource($resource, $existingDaemon);
+                    $this->deleteDaemonWorkload($server, $existingDaemon);
                 }
             }
 
@@ -969,13 +972,31 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         return (string) $connection."\0".(string) $queue;
     }
 
-    private function deleteWorkloadResource(object $resource, object $workload): void
+    private function deleteQueueWorkload(object $site, object $workload): void
     {
         if (! \property_exists($workload, 'id') || ! \is_numeric($workload->id)) {
             throw new \RuntimeException('Ploi workload resource is missing an ID and cannot be reconciled');
         }
 
-        $resource((int) $workload->id)->delete();
+        $site->queues((int) $workload->id)->delete();
+    }
+
+    private function deleteCronWorkload(object $server, object $workload): void
+    {
+        if (! \property_exists($workload, 'id') || ! \is_numeric($workload->id)) {
+            throw new \RuntimeException('Ploi workload resource is missing an ID and cannot be reconciled');
+        }
+
+        $server->cronjobs((int) $workload->id)->delete();
+    }
+
+    private function deleteDaemonWorkload(object $server, object $workload): void
+    {
+        if (! \property_exists($workload, 'id') || ! \is_numeric($workload->id)) {
+            throw new \RuntimeException('Ploi workload resource is missing an ID and cannot be reconciled');
+        }
+
+        $server->daemons((int) $workload->id)->delete();
     }
 
     /** @param array<string, mixed> $variables */
