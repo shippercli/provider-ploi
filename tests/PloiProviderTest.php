@@ -1030,6 +1030,54 @@ test('post-apply creates missing Ploi redirects through the mocked site resource
         ->toBe(['success' => true, 'message' => 'Redirects configured successfully']);
 });
 
+test('post-apply creates missing Ploi network rules through the mocked server resource', function (): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $rules = m::mock();
+    $response = m::mock(Response::class);
+    $response->shouldReceive('getJson')->once()->andReturn((object) [
+        'data' => [],
+        'meta' => (object) ['last_page' => 1],
+    ]);
+    $rules->shouldReceive('page')->with(1, 50)->once()->andReturn($response);
+    $rules->shouldReceive('create')->with('https', 443, 'tcp', '203.0.113.10', 'allow')->once();
+    $server->shouldReceive('networkRules')->once()->andReturn($rules);
+    $client->shouldReceive('server')->with(123)->once()->andReturn($server);
+    $provider = new class($client) extends PloiProvider
+    {
+        public function __construct(private readonly Ploi $fakeClient)
+        {
+            parent::__construct(['api_key' => 'token']);
+        }
+
+        protected function getClient(): Ploi
+        {
+            return $this->fakeClient;
+        }
+
+        public function configureNetworkRules(object $project): array
+        {
+            return $this->applyNetworkRules($project);
+        }
+    };
+    (new ReflectionProperty(PloiProvider::class, 'lastServerId'))->setValue($provider, 123);
+    $project = new class
+    {
+        public function networkRules(): array
+        {
+            return ['https' => new class {
+                public function port(): int { return 443; }
+                public function type(): string { return 'tcp'; }
+                public function fromIpAddress(): string { return '203.0.113.10'; }
+                public function ruleType(): string { return 'allow'; }
+            }];
+        }
+    };
+
+    expect($provider->configureNetworkRules($project))
+        ->toBe(['success' => true, 'message' => 'Network rules configured successfully']);
+});
+
 test('post-apply creates only missing aliases and passes force https to SSL', function (): void {
     $client = m::mock(Ploi::class);
     $server = m::mock(Server::class);

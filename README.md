@@ -15,9 +15,8 @@ Current scope includes:
 Rollback is not currently supported by Ploi and is reported as unavailable by
 `shipper rollback`.
 
-Network rules are not yet applied by this provider. Validation rejects a
-project that configures network rules instead of silently ignoring them.
-Redirects and `nginx_config` are applied during post-apply; queue workers,
+Network rules, redirects, and `nginx_config` are applied during post-apply;
+queue workers,
 cron jobs, and daemons are supported by the corresponding workload branch.
 
 Ploi accepts `site_id` when a database is created but does not publish an API

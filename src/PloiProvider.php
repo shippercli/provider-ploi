@@ -108,7 +108,6 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             'queues' => 'queues',
             'cron' => 'cron jobs',
             'daemons' => 'daemons',
-            'networkRules' => 'network rules',
         ];
         foreach ($unsupported as $accessor => $label) {
             $value = \method_exists($project, $accessor) ? $project->{$accessor}() : [];
@@ -173,6 +172,9 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
         if (\method_exists($project, 'redirects') && $project->redirects() !== []) {
             $actions[] = 'Create or reuse configured redirects';
+        }
+        if (\method_exists($project, 'networkRules') && $project->networkRules() !== []) {
+            $actions[] = 'Create or reuse configured network rules';
         }
 
         $nginxConfig = \method_exists($project, 'nginxConfig') ? $project->nginxConfig() : '';
@@ -502,6 +504,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $this->applyDeployScript($project, $profile),
             $this->applyEnvironment($project, $profile),
             $this->applyRedirects($project),
+            $this->applyNetworkRules($project),
             $this->applyNginxConfiguration($project),
             $this->applySsl($project, $profile),
         ];
@@ -583,6 +586,60 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         } catch (\Throwable $exception) {
             return ['success' => false, 'message' => 'Failed to configure redirects: '.$exception->getMessage()];
         }
+    }
+
+    /** @return array{success: bool, message: string} */
+    protected function applyNetworkRules(object $project): array
+    {
+        $rules = \method_exists($project, 'networkRules') ? $project->networkRules() : [];
+        if (! \is_array($rules) || $rules === []) {
+            return ['success' => true, 'message' => 'No network rules to configure'];
+        }
+
+        try {
+            $resource = $this->getClient()->server($this->lastServerId)->networkRules();
+            $existing = $this->paginatedData($resource);
+            foreach ($rules as $name => $rule) {
+                if (! \is_object($rule)) {
+                    continue;
+                }
+                $ruleName = $this->networkValue($rule, 'name', (string) $name);
+                $port = (int) $this->networkValue($rule, 'port', 0);
+                $type = $this->networkValue($rule, 'type', 'tcp');
+                $fromIp = $this->networkValue($rule, 'fromIpAddress', null);
+                $ruleType = $this->networkValue($rule, 'ruleType', 'allow');
+                $found = false;
+                foreach ($existing as $configured) {
+                    if (($configured->name ?? null) === $ruleName
+                        && (int) ($configured->port ?? 0) === $port
+                        && ($configured->type ?? 'tcp') === $type
+                        && ($configured->fromIpAddress ?? $configured->from_ip_address ?? null) === $fromIp
+                        && ($configured->ruleType ?? $configured->rule_type ?? 'allow') === $ruleType) {
+                        $found = true;
+                        break;
+                    }
+                }
+                if (! $found) {
+                    $resource->create($ruleName, $port, $type, $fromIp, $ruleType);
+                }
+            }
+
+            return ['success' => true, 'message' => 'Network rules configured successfully'];
+        } catch (\Throwable $exception) {
+            return ['success' => false, 'message' => 'Failed to configure network rules: '.$exception->getMessage()];
+        }
+    }
+
+    private function networkValue(object $rule, string $method, mixed $default): mixed
+    {
+        if (\method_exists($rule, $method)) {
+            return $rule->{$method}();
+        }
+        if (\property_exists($rule, $method)) {
+            return $rule->{$method};
+        }
+
+        return $default;
     }
 
     private function redirectValue(object $redirect, string $method, string $default = ''): string
