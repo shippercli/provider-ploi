@@ -1108,7 +1108,7 @@ test('create-mode readiness waits until the server becomes active', function ():
     expect(true)->toBeTrue();
 });
 
-test('generated database credentials are merged into the site environment', function (): void {
+test('generated database credentials are merged into the site environment', function (bool $hasEnvironment): void {
     $capturedEnvironment = '';
     $client = m::mock(Ploi::class);
     $server = m::mock(Server::class);
@@ -1181,11 +1181,16 @@ test('generated database credentials are merged into the site environment', func
         }
     };
 
+    if (! $hasEnvironment) {
+        $project = new class {};
+        $profile = new class {};
+    }
+
     expect($provider->applyGeneratedEnvironment($project, $profile)['success'])->toBeTrue()
         ->and($capturedEnvironment)->toContain('DB_DATABASE=api_preview')
         ->and($capturedEnvironment)->toContain('DB_USERNAME=api')
         ->and($capturedEnvironment)->toContain('DB_PASSWORD=generated-secret');
-});
+})->with([true, false]);
 
 test('validation accepts a supported PHP version shape', function (): void {
     $project = new class

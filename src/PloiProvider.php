@@ -687,12 +687,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     {
         $projectEnvironment = \method_exists($project, 'environment') ? $project->environment() : null;
         $profileEnvironment = \method_exists($profile, 'environment') ? $profile->environment() : null;
-        if (! \is_object($projectEnvironment) || ! \method_exists($projectEnvironment, 'mergeWith') || ! \is_object($profileEnvironment)) {
-            return ['success' => true, 'message' => 'No environment variables to configure'];
+        $variables = [];
+        if (\is_object($projectEnvironment) && \method_exists($projectEnvironment, 'mergeWith') && \is_object($profileEnvironment)) {
+            $merged = $projectEnvironment->mergeWith($profileEnvironment);
+            $variables = \is_object($merged) && \method_exists($merged, 'variables') ? $merged->variables() : [];
         }
-
-        $merged = $projectEnvironment->mergeWith($profileEnvironment);
-        $variables = \is_object($merged) && \method_exists($merged, 'variables') ? $merged->variables() : [];
         if (\is_array($variables)) {
             $variables = [...$variables, ...$this->generatedEnvironment];
         }
