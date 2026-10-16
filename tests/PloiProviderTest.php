@@ -999,7 +999,7 @@ test('create-mode retain cleanup deletes the profile site but retains the server
     ))->toBeTrue();
 });
 
-test('existing-site apply refreshes repository and configures before deploy', function (): void {
+test('existing-site apply refreshes repository and validates deployment polling', function (mixed $poll, bool $valid): void {
     $operations = [];
     $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
     $lifecycleClient->shouldReceive('get')->with(123)->once()->andReturn((object) ['id' => 123, 'status' => 'active']);
@@ -1017,9 +1017,7 @@ test('existing-site apply refreshes repository and configures before deploy', fu
         'data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']],
         'meta' => (object) ['last_page' => 1],
     ]);
-    $siteStatusResponse->shouldReceive('getJson')->andReturn((object) [
-        'data' => (object) ['deploying' => false, 'status' => 'deployed'],
-    ]);
+    $siteStatusResponse->shouldReceive('getJson')->andReturn($poll);
     $siteCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($siteListResponse);
     $repository->shouldReceive('install')->with('github', 'feature/test', 'ulties/shipper')->once()
         ->andReturnUsing(function () use (&$operations, $installResponse): Response {
@@ -1093,6 +1091,12 @@ test('existing-site apply refreshes repository and configures before deploy', fu
             return ['success' => true, 'message' => 'ok'];
         }
 
+        protected function applyWorkloads(object $project, object $profile): array
+        {
+            $this->operations[] = 'workloads';
+            return ['success' => true, 'message' => 'ok'];
+        }
+
         protected function deploymentLogs(int $serverId, int $siteId): array
         {
             return ['old deployment failed'];
@@ -1101,10 +1105,19 @@ test('existing-site apply refreshes repository and configures before deploy', fu
 
     $result = $provider->apply(makePluginProject(), makePluginProfile());
 
-    expect($provider->getLastError())->toBe('')
-        ->and($result)->toBeTrue()
-        ->and($operations)->toBe(['repository', 'aliases', 'deploy-script', 'environment', 'ssl', 'deploy']);
-});
+    expect($result)->toBe($valid)
+        ->and($operations)->toBe([...['repository', 'aliases', 'deploy-script', 'environment', 'ssl', 'deploy'], ...($valid ? ['workloads'] : [])]);
+    if ($valid) expect($provider->getLastError())->toBe('');
+    else expect($provider->getLastError())->toContain('Ploi returned an invalid deployment site response.');
+})->with([
+    [(object) ['data' => (object) ['id' => 55, 'server_id' => 123, 'status' => 'active']], true],
+    [(object) ['data' => (object) ['id' => 56, 'status' => 'active']], false],
+    [(object) ['data' => (object) ['id' => 55, 'server_id' => 124, 'status' => 'active']], false],
+    [(object) ['data' => (object) ['id' => 55]], false],
+    [(object) ['data' => (object) ['id' => 55, 'status' => 'unexpected']], false],
+    [(object) ['success' => false, 'data' => (object) ['id' => 55, 'status' => 'active']], false],
+    [(object) ['data' => (object) ['id' => 55, 'status' => 'active', 'deploying' => 0]], false],
+]);
 
 test('create-mode readiness waits until the server becomes active', function (): void {
     $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);

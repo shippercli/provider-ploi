@@ -231,3 +231,16 @@ References checked 2026-10-16:
 After each confirmed database creation, the provider merges its connection variables into the site environment and reads them back before creating another database. Existing unrelated environment values are retained. A later creation failure therefore leaves earlier confirmed connection settings available for retry. An unreadable or malformed environment, failed write, or mismatching readback stops further provisioning with a fixed diagnostic.
 
 This is not an atomic multi-database operation. A database can still be created before its credentials are successfully stored, and an ambiguous creation response can leave an unconfirmed resource. There is no durable credential journal or automatic rollback; resolve these failures before retrying.
+
+### Deployment status evidence
+
+Deployment polling validates the requested site ID, supplied server ID, response
+error fields and status shape before accepting the documented `active` state.
+Documented transitional states remain pending; `deploy-failed` reports failure.
+A supplied `deploying` field must be boolean. Missing, unrelated or unknown state
+cannot be treated as success. See the [Ploi status reference](https://developers.ploi.io/getting-started/resource-statuses).
+
+An active site is a status observation, not a unique receipt for the deployment
+that was just triggered. Correlating completion with a specific deployment and
+provider queue/persistence timing still needs live-account verification. A local
+timeout does not stop a remote deployment.

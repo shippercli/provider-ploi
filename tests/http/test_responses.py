@@ -28,7 +28,19 @@ class ResponsesTest(unittest.TestCase):
                 body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 received.append((self.path, self.headers.get('Authorization'), body))
                 procedure = self.path.rsplit('/', 1)[-1]
-                if self.path == '/servers/126/sites/55/env':
+                if self.path == '/servers/127/sites/55':
+                    case = self.headers['X-Fixture-Case'].removeprefix('poll-')
+                    record = {'id': 55, 'server_id': 127, 'status': 'active'}
+                    envelope = {'data': record}
+                    if case == 'deploying': record['status'] = 'deploying'
+                    if case == 'failed': record['status'] = 'deploy-failed'
+                    if case == 'wrong-id': record['id'] = 56
+                    if case == 'wrong-server': record['server_id'] = 128
+                    if case == 'missing-status': record.pop('status')
+                    if case == 'false': envelope['success'] = False
+                    if case == 'invalid-flag': record['deploying'] = 0
+                    status, payload = 200, json.dumps(envelope).encode()
+                elif self.path == '/servers/126/sites/55/env':
                     case = self.headers['X-Fixture-Case']
                     marker = hashlib.sha256(b'["fixture","production"]').hexdigest()
                     envelope = {'data': {'content': 'SHIPPERCLI_OWNERSHIP=' + marker}}
@@ -166,7 +178,7 @@ class ResponsesTest(unittest.TestCase):
                 self.assertEqual(partial_events, ['create:main', 'deliver', 'create:analytics', 'create:analytics', 'deliver'])
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 202)
+                self.assertEqual(len(received), 210)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:

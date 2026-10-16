@@ -377,18 +377,12 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 }
                 $initialCheck = false;
 
-                $siteInfo = $server->sites($siteId)->get()->getJson()->data ?? null;
-                if ($siteInfo === null) {
+                $state = $this->deploymentSiteState($server->sites($siteId)->get()->getJson(), $serverId, $siteId);
+                if ($state === 'pending') {
                     continue;
                 }
 
-                $isDeploying = \property_exists($siteInfo, 'deploying') ? (bool) $siteInfo->deploying : false;
-                if ($isDeploying) {
-                    continue;
-                }
-
-                $status = \property_exists($siteInfo, 'status') ? $siteInfo->status : null;
-                if ($status === 'deploy-failed') {
+                if ($state === 'failed') {
                     $this->lastError = 'Deployment failed on Ploi server (status: deploy-failed)';
                     \sleep(self::LOG_FETCH_DELAY_SECONDS);
                     $logs = $this->getDeploymentLogs($serverId, $siteId);
@@ -417,6 +411,29 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
             return false;
         }
+    }
+
+    private function deploymentSiteState(mixed $response, int $serverId, int $siteId): string
+    {
+        $site = \is_object($response) ? ($response->data ?? null) : null;
+        if (! \is_object($response) || ($response->errors ?? []) !== []
+            || ! \in_array($response->error ?? null, [null, '', false], true)
+            || (\property_exists($response, 'success') && $response->success !== true)
+            || ! \is_object($site) || $this->positiveResourceId($site->id ?? null) !== $siteId
+            || (\property_exists($site, 'server_id') && $this->positiveResourceId($site->server_id) !== $serverId)
+            || ! \is_string($site->status ?? null)
+            || (\property_exists($site, 'deploying') && ! \is_bool($site->deploying))) {
+            throw new \RuntimeException('Ploi returned an invalid deployment site response.');
+        }
+        if ($site->status === 'deploy-failed') return 'failed';
+        if ($site->status === 'active') return ($site->deploying ?? false) ? 'pending' : 'ready';
+        if (\in_array($site->status, ['created', 'building', 'deploying', 'repository-installing',
+            'repository-uninstalling', 'wordpress-installing', 'wordpress-uninstalling',
+            'nextcloud-installing', 'nextcloud-uninstalling', 'statamic-installing',
+            'statamic-uninstalling', 'octobercms-installing', 'octobercms-uninstalling',
+            'clone-in-progress', 'staging-production-syncing'], true)) return 'pending';
+
+        throw new \RuntimeException('Ploi returned an invalid deployment site response.');
     }
 
     /** @return array<string, string> */

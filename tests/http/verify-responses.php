@@ -222,3 +222,21 @@ foreach (['valid', 'false', 'errors', 'error'] as $case) {
     }
 }
 echo "Four real SDK ownership envelope controls passed\n";
+
+
+foreach (['active', 'deploying', 'failed', 'wrong-id', 'wrong-server', 'missing-status', 'false', 'invalid-flag'] as $case) {
+    $api = new PloiApiClient('synthetic-authorization-secret', new Client(['base_uri' => $argv[1].'/',
+        'headers' => ['X-Fixture-Case' => 'poll-'.$case]]));
+    $provider = new \ShipperCli\ProviderPloi\PloiProvider;
+    $failure = null;
+    $state = null;
+    try {
+        $state = (new ReflectionMethod($provider, 'deploymentSiteState'))->invoke($provider, $api->server(127)->sites(55)->get()->getJson(), 127, 55);
+    } catch (RuntimeException $error) { $failure = $error; }
+    $expected = ['active' => 'ready', 'deploying' => 'pending', 'failed' => 'failed'][$case] ?? null;
+    if ($expected !== null ? ($state !== $expected || $failure !== null)
+        : $failure?->getMessage() !== 'Ploi returned an invalid deployment site response.') {
+        throw new RuntimeException('Deployment site response accepted an invalid identity or state');
+    }
+}
+echo "Eight real SDK deployment site response checks passed\n";
