@@ -31,6 +31,16 @@ class ResponsesTest(unittest.TestCase):
                         status, payload = 404, b'{}'
                     else:
                         status, payload = 200, b'{"data":{"id":7,"status":"active"}}'
+                elif self.path.split('?')[0].startswith('/servers/123/databases'):
+                    case = self.headers['X-Fixture-Case']
+                    if self.command == 'DELETE':
+                        status, payload = 200, (json.dumps({'errors': [self.headers.get('Authorization', '')]}).encode() if case == 'error' else b'')
+                    else:
+                        data = {'visible': [{'id': 9, 'name': 'fixture'}],
+                                'recreated': [{'id': 10, 'name': 'fixture'}],
+                                'renamed': [{'id': 9, 'name': 'other'}]}.get(case, [])
+                        envelope = {} if case == 'unreadable' else {'data': data, 'meta': {'last_page': 1}}
+                        status, payload = 200, json.dumps(envelope).encode()
                 elif self.path.split('?')[0] == '/servers':
                     case = self.headers['X-Fixture-Case']
                     echoed = self.headers.get('Authorization', '') + 'synthetic-error-secret'
@@ -69,7 +79,7 @@ class ResponsesTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 77)
+                self.assertEqual(len(received), 88)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:

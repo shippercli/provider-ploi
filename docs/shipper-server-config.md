@@ -265,3 +265,15 @@ association IDs must be positive integers or canonical decimal strings matching
 the site exactly. Fractions, exponents, whitespace and trailing text are not
 coerced into an ownership match. This does not add an existing-database attach
 operation: the API association limitation described above still applies.
+
+Database cleanup now reads a fresh validated database inventory after each
+DELETE and requires both the deleted ID and name to be absent before continuing
+to site deletion. A still-visible, renamed, or recreated record, unreadable
+inventory, or explicit API error stops cleanup. A documented empty DELETE body
+is accepted as an acknowledgement, not as proof of absence. The check performs
+one fresh read: asynchronous deletion can return an unconfirmed result requiring
+a status recheck before retry. It proves control-plane inventory absence at that
+observation, not physical erasure, backup deletion, or a transaction with site
+cleanup. No automatic second DELETE is sent by this verification.
+
+API reference: https://developers.ploi.io/databases/delete-database

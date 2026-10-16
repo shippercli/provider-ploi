@@ -557,7 +557,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                     if (\property_exists($db, 'name') && $db->name === $dbName && \property_exists($db, 'id')) {
                         $this->assertDatabaseSiteAssociation($db, $siteId, $dbName);
                         try {
-                            $server->databases((int) $db->id)->delete();
+                            $this->deleteDatabaseAndVerify($server, (int) $db->id, $dbName);
                         } catch (\Throwable $exception) {
                             $this->lastError = "Failed to delete database {$dbName}: ".$exception->getMessage();
 
@@ -1778,7 +1778,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
                 try {
                     $this->assertDatabaseSiteAssociation($existingDatabase, $siteId, $dbName);
-                    $server->databases((int) $existingDatabase->id)->delete();
+                    $this->deleteDatabaseAndVerify($server, (int) $existingDatabase->id, $dbName);
                 } catch (\Throwable $exception) {
                     $databaseErrors[] = "Failed to delete database {$dbName}: ".$exception->getMessage();
                 }
@@ -1809,6 +1809,22 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         return true;
+    }
+
+    private function deleteDatabaseAndVerify(object $server, int $id, string $name): void
+    {
+        // The documented successful database DELETE response has an empty body.
+        $json = $server->databases($id)->delete()->getJson();
+        if ($json !== null && (! \is_object($json) || ($json->errors ?? []) !== []
+            || ! \in_array($json->error ?? null, [null, '', false], true)
+            || (\property_exists($json, 'success') && $json->success !== true))) {
+            throw new \RuntimeException('Ploi database deletion returned an invalid or contradictory response.');
+        }
+        foreach ($this->databaseInventory($server->databases()) as $database) {
+            if ($this->positiveResourceId($database->id) === $id || $database->name === $name) {
+                throw new \RuntimeException('Ploi database deletion remains unconfirmed; a matching identity is still visible. Recheck before retrying.');
+            }
+        }
     }
 
     private function positiveResourceId(mixed $value): ?int

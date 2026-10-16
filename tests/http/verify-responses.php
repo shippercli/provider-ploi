@@ -55,3 +55,18 @@ foreach (['error', 'errors', 'false', 'string', 'null', 'valid'] as $case) {
     }
 }
 echo "12 real HTTP lifecycle envelope checks passed\n";
+
+foreach (['absent', 'visible', 'recreated', 'renamed', 'unreadable', 'error'] as $case) {
+    $api = new PloiApiClient('synthetic-authorization-secret', new Client(['base_uri' => $argv[1].'/',
+        'headers' => ['X-Fixture-Case' => $case]]));
+    $failure = null;
+    try {
+        (new ReflectionMethod(\ShipperCli\ProviderPloi\PloiProvider::class, 'deleteDatabaseAndVerify'))
+            ->invoke(new \ShipperCli\ProviderPloi\PloiProvider, $api->server(123), 9, 'fixture');
+    } catch (RuntimeException $exception) { $failure = $exception; }
+    if (($case === 'absent') !== ($failure === null)) throw new RuntimeException('Invalid database deletion verification: '.$case);
+    if ($failure !== null && str_contains($failure->getMessage(), 'synthetic-authorization-secret')) {
+        throw new RuntimeException('Database deletion failure echoed credentials');
+    }
+}
+echo "Six real HTTP database deletion verification cases passed\n";
