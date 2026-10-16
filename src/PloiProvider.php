@@ -1786,14 +1786,28 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
             $json = $response->getJson();
             $data = $json->data ?? null;
-            if (! \is_array($data)) {
+            if (! \is_array($data) || ! \array_is_list($data)) {
                 throw new \RuntimeException('Ploi returned invalid paginated resource data');
             }
 
-            $items = [...$items, ...\array_values(\array_filter($data, \is_object(...)))];
-            $lastPage = isset($json->meta->last_page) && \is_numeric($json->meta->last_page)
-                ? (int) $json->meta->last_page
-                : $page;
+            foreach ($data as $item) {
+                if (! \is_object($item)) {
+                    throw new \RuntimeException('Ploi returned an invalid paginated resource entry');
+                }
+            }
+            $rawLastPage = $json->meta->last_page ?? null;
+            $lastPage = (\is_int($rawLastPage) || \is_string($rawLastPage))
+                ? \filter_var($rawLastPage, FILTER_VALIDATE_INT, ['options' => ['min_range' => $page]]) : false;
+            if ($lastPage === false) {
+                throw new \RuntimeException('Ploi returned invalid pagination metadata');
+            }
+            $currentPage = $json->meta->current_page ?? $page;
+            if ((\is_int($currentPage) || \is_string($currentPage))
+                && \filter_var($currentPage, FILTER_VALIDATE_INT) === $page) {
+                $items = [...$items, ...$data];
+            } else {
+                throw new \RuntimeException('Ploi returned a different pagination page than requested');
+            }
             $page++;
         } while ($page <= $lastPage);
 
