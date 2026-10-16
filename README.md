@@ -244,3 +244,9 @@ An active site is a status observation, not a unique receipt for the deployment
 that was just triggered. Correlating completion with a specific deployment and
 provider queue/persistence timing still needs live-account verification. A local
 timeout does not stop a remote deployment.
+
+The deployment poll uses a monotonic deadline and does not start another poll
+after expiry. Sleep is capped to remaining time, and a response arriving after
+the deadline cannot report success. An in-flight SDK request can still take its
+configured transport timeout to return; the local deployment deadline does not
+cancel that request or the remote operation.

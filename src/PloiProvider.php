@@ -367,18 +367,19 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
             $timeout = $this->getDeploymentTimeout();
             $pollInterval = 5;
-            $elapsed = 0;
-            $initialCheck = true;
+            $deadline = \hrtime(true) / 1_000_000_000 + $timeout;
 
-            while ($elapsed < $timeout) {
-                if (! $initialCheck) {
-                    \sleep($pollInterval);
-                    $elapsed += $pollInterval;
+            while (\hrtime(true) / 1_000_000_000 < $deadline) {
+                $response = $server->sites($siteId)->get()->getJson();
+                if (\hrtime(true) / 1_000_000_000 >= $deadline) {
+                    break;
                 }
-                $initialCheck = false;
-
-                $state = $this->deploymentSiteState($server->sites($siteId)->get()->getJson(), $serverId, $siteId);
+                $state = $this->deploymentSiteState($response, $serverId, $siteId);
                 if ($state === 'pending') {
+                    $remaining = $deadline - \hrtime(true) / 1_000_000_000;
+                    if ($remaining > 0) {
+                        \usleep((int) (\min($pollInterval, $remaining) * 1_000_000));
+                    }
                     continue;
                 }
 

@@ -999,7 +999,7 @@ test('create-mode retain cleanup deletes the profile site but retains the server
     ))->toBeTrue();
 });
 
-test('existing-site apply refreshes repository and validates deployment polling', function (mixed $poll, bool $valid): void {
+test('existing-site apply refreshes repository and validates deployment polling', function (mixed $poll, bool $valid, bool $timedOut = false, bool $slowRead = false): void {
     $operations = [];
     $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
     $lifecycleClient->shouldReceive('get')->with(123)->once()->andReturn((object) ['id' => 123, 'status' => 'active']);
@@ -1017,7 +1017,10 @@ test('existing-site apply refreshes repository and validates deployment polling'
         'data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']],
         'meta' => (object) ['last_page' => 1],
     ]);
-    $siteStatusResponse->shouldReceive('getJson')->andReturn($poll);
+    $siteStatusResponse->shouldReceive('getJson')->andReturnUsing(function () use ($poll, $slowRead) {
+        if ($slowRead) usleep(1_100_000);
+        return $poll;
+    });
     $siteCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($siteListResponse);
     $repository->shouldReceive('install')->with('github', 'feature/test', 'ulties/shipper')->once()
         ->andReturnUsing(function () use (&$operations, $installResponse): Response {
@@ -1108,9 +1111,11 @@ test('existing-site apply refreshes repository and validates deployment polling'
     expect($result)->toBe($valid)
         ->and($operations)->toBe([...['repository', 'aliases', 'deploy-script', 'environment', 'ssl', 'deploy'], ...($valid ? ['workloads'] : [])]);
     if ($valid) expect($provider->getLastError())->toBe('');
-    else expect($provider->getLastError())->toContain('Ploi returned an invalid deployment site response.');
+    else expect($provider->getLastError())->toContain($timedOut ? 'Deployment timeout after 1 seconds.' : 'Ploi returned an invalid deployment site response.');
 })->with([
     [(object) ['data' => (object) ['id' => 55, 'server_id' => 123, 'status' => 'active']], true],
+    [(object) ['data' => (object) ['id' => 55, 'status' => 'deploying']], false, true],
+    [(object) ['data' => (object) ['id' => 55, 'status' => 'active']], false, true, true],
     [(object) ['data' => (object) ['id' => 56, 'status' => 'active']], false],
     [(object) ['data' => (object) ['id' => 55, 'server_id' => 124, 'status' => 'active']], false],
     [(object) ['data' => (object) ['id' => 55]], false],
