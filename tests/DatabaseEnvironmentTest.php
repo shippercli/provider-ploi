@@ -51,3 +51,34 @@ test('ambiguous Ploi database mappings fail before database API calls', function
     $provider = new PloiProvider(['database_environment_prefixes' => $prefixes]);
     (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), new stdClass);
 })->with([[[]], [['main' => 'DB', 'analytics' => 'DB']]])->throws(InvalidArgumentException::class);
+
+test('existing Ploi databases require available matching application credentials without rotation', function (string $content, bool $valid): void {
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $site = m::mock(\Ploi\Resources\Site::class);
+    $page = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [(object) ['name' => 'main', 'site' => (object) ['id' => 55]]], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->with(1, 50)->once()->andReturn($page);
+    $databases->shouldNotReceive('create');
+    $server->shouldReceive('databases')->once()->andReturn($databases);
+    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $site->shouldReceive('environment->get->getJson')->once()->andReturn((object) ['data' => (object) ['content' => $content]]);
+    $project = new class {
+        public function name(): string { return 'api'; }
+        public function databases(): array { return [new class {
+            public function name(): string { return 'main'; }
+            public function user(): string { return 'api'; }
+        }]; }
+    };
+    $provider = new PloiProvider;
+    $result = (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, $project, new stdClass);
+    expect($result)->toBe($valid)
+        ->and((new ReflectionProperty($provider, 'generatedEnvironment'))->getValue($provider))->toBe([])
+        ->and($provider->getLastError())->not->toContain('retained-secret');
+})->with([
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD='retained-secret'", true],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api", false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=other\nDB_USERNAME=api\nDB_PASSWORD=retained-secret", false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=''", false],
+    ["DB_PASSWORD=\"unterminated", false],
+]);

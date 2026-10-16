@@ -6,7 +6,8 @@
     "require": {
         "php": "^8.3",
         "ploi/ploi-php-sdk": "^1.9",
-        "shippercli/contracts": "^1.2"
+        "shippercli/contracts": "^1.2",
+        "vlucas/phpdotenv": "^5.6"
     },
     "require-dev": {
         "mockery/mockery": "^1.6",

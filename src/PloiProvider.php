@@ -445,6 +445,23 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                         return false;
                     }
 
+                    $prefix = $prefixes[$this->databaseValue($database, 'name')];
+                    $content = $server->sites($siteId)->environment()->get()->getJson()->data->content ?? '';
+                    try {
+                        $available = [...\Dotenv\Dotenv::parse(\is_string($content) ? $content : ''), ...$this->configuredEnvironment($project, $profile)];
+                    } catch (\Throwable) {
+                        $this->lastError = 'Cannot parse the existing Ploi site environment; review its connection settings before reusing a database.';
+
+                        return false;
+                    }
+                    if (($available[$prefix.'_DATABASE'] ?? null) !== $dbName
+                        || ($available[$prefix.'_USERNAME'] ?? null) !== $dbUser
+                        || ! \is_string($available[$prefix.'_PASSWORD'] ?? null) || $available[$prefix.'_PASSWORD'] === ''
+                        || ! \is_string($available[$prefix.'_HOST'] ?? null) || $available[$prefix.'_HOST'] === '') {
+                        $this->lastError = "Existing Ploi database {$dbName} requires matching {$prefix} connection settings and a password in the application environment.";
+
+                        return false;
+                    }
                     $exists = true;
                     break;
                 }
@@ -736,17 +753,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @return array{success: bool, message: string} */
     protected function applyEnvironment(object $project, object $profile): array
     {
-        $projectEnvironment = \method_exists($project, 'environment') ? $project->environment() : null;
-        $profileEnvironment = \method_exists($profile, 'environment') ? $profile->environment() : null;
-        $variables = [];
-        if (\is_object($projectEnvironment) && \method_exists($projectEnvironment, 'mergeWith') && \is_object($profileEnvironment)) {
-            $merged = $projectEnvironment->mergeWith($profileEnvironment);
-            $variables = \is_object($merged) && \method_exists($merged, 'variables') ? $merged->variables() : [];
-        }
-        if (\is_array($variables)) {
-            $variables = [...$variables, ...$this->generatedEnvironment];
-        }
-        if (! \is_array($variables) || $variables === []) {
+        $variables = [...$this->configuredEnvironment($project, $profile), ...$this->generatedEnvironment];
+        if ($variables === []) {
             return ['success' => true, 'message' => 'No environment variables to configure'];
         }
 
@@ -1443,6 +1451,19 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         return $content;
+    }
+
+    /** @return array<string, mixed> */
+    private function configuredEnvironment(object $project, object $profile): array
+    {
+        $variables = [];
+        foreach ([$project, $profile] as $source) {
+            $environment = \method_exists($source, 'environment') ? $source->environment() : null;
+            $values = \is_object($environment) && \method_exists($environment, 'variables') ? $environment->variables() : [];
+            if (\is_array($values)) $variables = [...$variables, ...$values];
+        }
+
+        return $variables;
     }
 
     private function profileDomain(object $profile): string
