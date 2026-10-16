@@ -524,7 +524,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
                     $prefix = $prefixes[$this->databaseValue($database, 'name')];
                     try {
-                        [, $existing] = $this->readDatabaseEnvironment($server->sites($siteId)->environment());
+                        [, $existing] = $this->readSiteEnvironment($server->sites($siteId)->environment());
                         $available = [...$existing, ...$this->configuredEnvironment($project, $profile)];
                     } catch (\Throwable) {
                         $this->lastError = 'Cannot parse the existing Ploi site environment; review its connection settings before reusing a database.';
@@ -576,7 +576,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     }
 
     /** @return array{string, array<string, string>} */
-    private function readDatabaseEnvironment(object $environment): array
+    private function readSiteEnvironment(object $environment): array
     {
         $response = $environment->get()->getJson();
         if (! \is_object($response) || ($response->errors ?? []) !== []
@@ -593,9 +593,9 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     {
         try {
             $environment = $server->sites($siteId)->environment();
-            [$content] = $this->readDatabaseEnvironment($environment);
+            [$content] = $this->readSiteEnvironment($environment);
             $environment->update($this->mergeEnvironment($content, $this->generatedEnvironment));
-            [, $stored] = $this->readDatabaseEnvironment($environment);
+            [, $stored] = $this->readSiteEnvironment($environment);
             foreach ($this->generatedEnvironment as $key => $value) {
                 if (($stored[$key] ?? null) !== $value) {
                     throw new \RuntimeException('Connection readback mismatch.');
@@ -876,8 +876,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
         try {
             $environment = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->environment();
-            $existing = $environment->get()->getJson()->data->content ?? '';
-            $environment->update($this->mergeEnvironment(\is_string($existing) ? $existing : '', $variables));
+            [$existing] = $this->readSiteEnvironment($environment);
+            $environment->update($this->mergeEnvironment($existing, $variables));
 
             return ['success' => true, 'message' => 'Environment variables configured successfully'];
         } catch (\Throwable $exception) {
