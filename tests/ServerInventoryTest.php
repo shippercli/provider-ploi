@@ -71,3 +71,26 @@ it('rejects a repeated server identity across different pages', function (): voi
     ]);
     expect(fn () => $client->list())->toThrow(RuntimeException::class, 'duplicate identity');
 });
+
+it('rejects contradictory server inventory and creation envelopes', function (array $flags, string $operation): void {
+    $page = array_merge(['data' => [['id' => 1, 'name' => 'fixture']], 'meta' => ['last_page' => 1]], $flags);
+    $created = array_merge(['data' => ['id' => 123]], $flags);
+    expect(fn () => $operation === 'list'
+        ? serverInventoryClient([$page])->list()
+        : serverInventoryClient([$created])->create('fixture', 42, 'region', 'plan'))
+        ->toThrow(RuntimeException::class, 'contradictory');
+})->with([
+    'error' => [['error' => 'synthetic-private-error']],
+    'errors' => [['errors' => ['synthetic-private-error']]],
+    'success false' => [['success' => false]],
+    'success string' => [['success' => 'true']],
+    'success null' => [['success' => null]],
+])->with(['list', 'create']);
+
+it('preserves valid server envelopes with explicitly empty error fields', function (): void {
+    $flags = ['success' => true, 'error' => null, 'errors' => []];
+    $page = array_merge(['data' => [['id' => 1, 'name' => 'fixture']], 'meta' => ['last_page' => 1]], $flags);
+    expect(serverInventoryClient([$page])->list())->toHaveCount(1);
+    expect(serverInventoryClient([array_merge(['data' => ['id' => 123]], $flags)])
+        ->create('fixture', 42, 'region', 'plan'))->toBe(123);
+});

@@ -35,3 +35,23 @@ echo "60 HTTP rejection checks and two success controls passed\n";
 
 (new \ShipperCli\ProviderPloi\PloiServerLifecycleClient($client, 0))->delete(7);
 echo "Real HTTP deletion completed only after matching acknowledgement and subsequent 404\n";
+
+foreach (['error', 'errors', 'false', 'string', 'null', 'valid'] as $case) {
+    foreach (['list', 'create'] as $operation) {
+        $lifecycle = new \ShipperCli\ProviderPloi\PloiServerLifecycleClient(new PloiApiClient(
+            'synthetic-authorization-secret', new Client(['base_uri' => $argv[1].'/',
+                'headers' => ['X-Fixture-Case' => $case]])));
+        $failure = null;
+        try {
+            $result = $operation === 'list' ? $lifecycle->list() : $lifecycle->create('fixture', 42, 'region', 'plan');
+        } catch (RuntimeException $exception) { $failure = $exception; }
+        if ($case === 'valid') {
+            if ($failure !== null || ($operation === 'list' ? count($result) !== 1 : $result !== 123)) {
+                throw new RuntimeException('Valid lifecycle envelope rejected');
+            }
+        } elseif ($failure === null || $failure->getMessage() !== 'Ploi server response is invalid or contradictory.') {
+            throw new RuntimeException('Contradictory lifecycle envelope accepted or exposed');
+        }
+    }
+}
+echo "12 real HTTP lifecycle envelope checks passed\n";

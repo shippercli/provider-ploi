@@ -26,6 +26,7 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
         $expectedTotal = null;
         do {
             $json = $this->client->server()->page($page, 50)->getJson();
+            $this->assertSuccessfulEnvelope($json);
             $data = $json->data ?? null;
             $meta = $json->meta ?? null;
             if (! \is_array($data) || ! \array_is_list($data) || ! \is_object($meta)) {
@@ -87,7 +88,9 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
     {
         // Override the SDK's legacy PHP 7.4 and unversioned MySQL defaults.
         $options = array_merge(['php_version' => '8.4', 'database_type' => 'mysql84'], $options);
-        $data = $this->client->server()->create($name, $credential, $region, $plan, $options)->getJson()->data ?? null;
+        $json = $this->client->server()->create($name, $credential, $region, $plan, $options)->getJson();
+        $this->assertSuccessfulEnvelope($json);
+        $data = $json->data ?? null;
         if (! \is_object($data) || $this->serverId($data->id ?? null) === null) {
             throw new \RuntimeException('Failed to create Ploi server: invalid response from API');
         }
@@ -136,6 +139,15 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
             }
             ($this->pause)();
         } while (true);
+    }
+
+    private function assertSuccessfulEnvelope(mixed $json): void
+    {
+        if (! \is_object($json) || ($json->errors ?? []) !== []
+            || ! \in_array($json->error ?? null, [null, '', false], true)
+            || (\property_exists($json, 'success') && $json->success !== true)) {
+            throw new \RuntimeException('Ploi server response is invalid or contradictory.');
+        }
     }
 
     private function serverId(mixed $value): ?int

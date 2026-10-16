@@ -236,3 +236,9 @@ cloud termination or the absence of all related resources. Live completion,
 shared lifecycle locking, and concurrent account changes remain unverified. Mock
 and real local HTTP tests cover the sequence and refusal cases; no real server
 was deleted during the audit.
+
+Server inventory pages and creation responses reject explicit API errors or a
+present `success` flag other than boolean `true`, even when identities and
+pagination otherwise look valid. The diagnostic does not echo response error
+text. Rejection of a creation acknowledgement does not prove the server was
+never created: inspect the account before retrying to avoid duplicate servers.

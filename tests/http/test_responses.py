@@ -31,6 +31,15 @@ class ResponsesTest(unittest.TestCase):
                         status, payload = 404, b'{}'
                     else:
                         status, payload = 200, b'{"data":{"id":7,"status":"active"}}'
+                elif self.path.split('?')[0] == '/servers':
+                    case = self.headers['X-Fixture-Case']
+                    echoed = self.headers.get('Authorization', '') + 'synthetic-error-secret'
+                    envelope = {'data': {'id': 123}} if self.command == 'POST' else {
+                        'data': [{'id': 123, 'name': 'fixture'}], 'meta': {'last_page': 1}}
+                    envelope.update({'error': {'error': echoed}, 'errors': {'errors': [echoed]},
+                        'false': {'success': False}, 'string': {'success': 'true'},
+                        'null': {'success': None}, 'valid': {'success': True, 'error': None, 'errors': []}}[case])
+                    status, payload = 200, json.dumps(envelope).encode()
                 elif procedure.startswith('status-'):
                     _, status, format_ = procedure.split('-')
                     status = int(status)
@@ -60,7 +69,7 @@ class ResponsesTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 65)
+                self.assertEqual(len(received), 77)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:
