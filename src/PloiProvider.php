@@ -491,7 +491,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
             if (! $exists) {
                 $password = $this->generateDatabasePassword();
-                $created = $server->databases()->create($dbName, $dbUser, $password, null, $siteId)->getJson();
+                try {
+                    $created = $server->databases()->create($dbName, $dbUser, $password, null, $siteId)->getJson();
+                } catch (\Throwable) {
+                    throw new \RuntimeException('Ploi did not confirm the requested database creation identity.');
+                }
                 $record = \is_object($created) ? ($created->data ?? null) : null;
                 if (! \is_object($created) || ($created->errors ?? []) !== []
                     || ! \in_array($created->error ?? null, [null, '', false], true)

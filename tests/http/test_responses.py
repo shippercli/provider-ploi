@@ -23,7 +23,25 @@ class ResponsesTest(unittest.TestCase):
                 body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 received.append((self.path, self.headers.get('Authorization'), body))
                 procedure = self.path.rsplit('/', 1)[-1]
-                if self.path == '/servers/7':
+                if self.path.split('?')[0] == '/servers/124/databases':
+                    case = self.headers['X-Fixture-Case']
+                    if self.command == 'GET':
+                        envelope = {'data': [], 'meta': {'last_page': 1}}
+                    else:
+                        request = json.loads(body)
+                        if request.get('name') != 'fixture' or request.get('user') != 'fixture_user' or request.get('site_id') != 55 or not request.get('password'):
+                            raise AssertionError('Unexpected database creation request')
+                        record = {'id': 9, 'name': 'fixture'}
+                        if case == 'wrong-name': record['name'] = 'foreign'
+                        if case == 'bad-id': record['id'] = '9junk'
+                        if case == 'wrong-site': record['site'] = {'id': 56}
+                        if case == 'valid-site': record['site'] = {'id': '55'}
+                        envelope = {'data': record}
+                        if case == 'missing': envelope = {}
+                        if case == 'false': envelope['success'] = False
+                        if case == 'error': envelope['errors'] = [self.headers.get('Authorization', '')]
+                    status, payload = 200, json.dumps(envelope).encode()
+                elif self.path == '/servers/7':
                     deletion_methods.append(self.command)
                     if self.command == 'DELETE':
                         pending[0] = True
@@ -105,7 +123,7 @@ class ResponsesTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 150)
+                self.assertEqual(len(received), 166)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:
