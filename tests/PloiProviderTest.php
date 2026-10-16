@@ -1141,8 +1141,10 @@ test('generated database credentials are merged into the site environment', func
     $environment = m::mock(Environment::class);
     $getResponse = m::mock(Response::class);
     $updateResponse = m::mock(Response::class);
-    $getResponse->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['content' => 'APP_ENV=production']]);
-    $environment->shouldReceive('get')->once()->andReturn($getResponse);
+    $getResponse->shouldReceive('getJson')->andReturnUsing(function () use (&$capturedEnvironment) {
+        return (object) ['data' => (object) ['content' => $capturedEnvironment ?? 'APP_ENV=production']];
+    });
+    $environment->shouldReceive('get')->twice()->andReturn($getResponse);
     $environment->shouldReceive('update')->once()->andReturnUsing(function (string $content) use (&$capturedEnvironment, $updateResponse): Response {
         $capturedEnvironment = $content;
 

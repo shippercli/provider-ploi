@@ -181,3 +181,25 @@ if (($stored['DB_PASSWORD'] ?? null) !== $first['DB_PASSWORD']
     throw new RuntimeException('Partial provisioning retry changed or lost connection settings');
 }
 echo "Real SDK partial provisioning and fresh retry passed\n";
+
+
+foreach (['final-valid', 'final-ignored'] as $case) {
+    $api = new PloiApiClient('synthetic-authorization-secret', new Client(['base_uri' => $argv[1].'/',
+        'headers' => ['X-Fixture-Case' => $case]]));
+    $provider = new class($api) extends \ShipperCli\ProviderPloi\PloiProvider {
+        public function __construct(private \Ploi\Ploi $client) { parent::__construct(); }
+        protected function getClient(): \Ploi\Ploi { return $this->client; }
+    };
+    (new ReflectionProperty(\ShipperCli\ProviderPloi\PloiProvider::class, 'lastServerId'))->setValue($provider, 124);
+    (new ReflectionProperty(\ShipperCli\ProviderPloi\PloiProvider::class, 'lastSiteId'))->setValue($provider, 55);
+    $project = new class {
+        public function environment(): object { return new class {
+            public function variables(): array { return ['APP_NAME' => 'literal-${PROJECT_NAME}-secret', 'COUNT' => 7, 'EMPTY' => '']; }
+        }; }
+    };
+    $result = (new ReflectionMethod($provider, 'applyEnvironment'))->invoke($provider, $project, new stdClass);
+    if ($result['success'] !== ($case === 'final-valid') || str_contains($result['message'], 'literal-${PROJECT_NAME}-secret')) {
+        throw new RuntimeException('Final environment readback acceptance or diagnostics incorrect');
+    }
+}
+echo "Final environment real SDK readback controls passed\n";

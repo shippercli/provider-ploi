@@ -51,7 +51,7 @@ class ResponsesTest(unittest.TestCase):
                     payload = json.dumps(envelope).encode()
                 elif self.path == '/servers/124/sites/55/env':
                     case = self.headers['X-Fixture-Case']
-                    if self.command == 'PATCH':
+                    if self.command == 'PATCH' and case != 'final-ignored':
                         environments[case] = json.loads(body)['content']
                     status, payload = 200, json.dumps({'data': {'content': environments.get(case, 'APP_ENV=production\n')}}).encode()
                 elif self.path.split('?')[0] == '/servers/124/databases':
@@ -157,7 +157,7 @@ class ResponsesTest(unittest.TestCase):
                 self.assertEqual(partial_events, ['create:main', 'deliver', 'create:analytics', 'create:analytics', 'deliver'])
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 192)
+                self.assertEqual(len(received), 198)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:

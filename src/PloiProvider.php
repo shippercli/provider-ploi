@@ -878,10 +878,17 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $environment = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->environment();
             [$existing] = $this->readSiteEnvironment($environment);
             $environment->update($this->mergeEnvironment($existing, $variables));
+            [, $stored] = $this->readSiteEnvironment($environment);
+            foreach ($variables as $key => $value) {
+                if (\is_scalar($value) && ($stored[$key] ?? null) !== (string) $value) {
+                    throw new \RuntimeException('Environment readback mismatch.');
+                }
+            }
+
 
             return ['success' => true, 'message' => 'Environment variables configured successfully'];
         } catch (\Throwable $exception) {
-            return ['success' => false, 'message' => 'Failed to configure environment variables: '.$exception->getMessage()];
+            return ['success' => false, 'message' => 'Ploi did not confirm the requested environment configuration.'];
         }
     }
 
