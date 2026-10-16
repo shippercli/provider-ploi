@@ -212,7 +212,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $blocked = null;
         if ($serverId !== null) {
             try {
-                foreach ($this->paginatedData($this->getClient()->server((int) $serverId)->sites()) as $candidate) {
+                foreach ($this->siteInventory($this->getClient()->server((int) $serverId)->sites()) as $candidate) {
                     if (! \is_string($candidate->domain ?? null) || ! \is_int($candidate->id ?? null) || $candidate->id < 1) {
                         throw new \RuntimeException('Ploi site inventory contains an invalid identity.');
                     }
@@ -306,7 +306,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $repoName = \is_string($repository['name'] ?? null) ? $repository['name'] : '';
 
             $existingSite = null;
-            foreach ($this->paginatedData($server->sites()) as $site) {
+            foreach ($this->siteInventory($server->sites()) as $site) {
                 if (\property_exists($site, 'domain') && $site->domain === $domain) {
                     $existingSite = $site;
                     break;
@@ -528,7 +528,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
 
             $existingSite = null;
-            foreach ($this->paginatedData($server->sites()) as $site) {
+            foreach ($this->siteInventory($server->sites()) as $site) {
                 if (\property_exists($site, 'domain') && $site->domain === $domain) {
                     $existingSite = $site;
                     break;
@@ -602,7 +602,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         $sites = [];
-        foreach ($this->paginatedData($this->getClient()->server($serverId)->sites()) as $site) {
+        foreach ($this->siteInventory($this->getClient()->server($serverId)->sites()) as $site) {
             if (\property_exists($site, 'id') && \property_exists($site, 'domain')) {
                 try {
                     $this->assertSiteOwnership($project, $profile, $serverId, (int) $site->id);
@@ -1497,7 +1497,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
     private function findSite(int $serverId, string $domain): ?object
     {
-        foreach ($this->paginatedData($this->getClient()->server($serverId)->sites()) as $site) {
+        foreach ($this->siteInventory($this->getClient()->server($serverId)->sites()) as $site) {
             if (! \is_string($site->domain ?? null) || ! \is_int($site->id ?? null) || $site->id < 1) {
                 throw new \RuntimeException('Ploi site inventory contains an invalid identity.');
             }
@@ -1742,7 +1742,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     private function deleteProfileSiteAndDatabases(object $project, object $profile, int $serverId): bool
     {
         $domain = $this->profileDomain($profile);
-        foreach ($this->paginatedData($this->getClient()->server($serverId)->sites()) as $site) {
+        foreach ($this->siteInventory($this->getClient()->server($serverId)->sites()) as $site) {
             if (\property_exists($site, 'domain') && $site->domain === $domain && \property_exists($site, 'id')) {
                 return $this->deleteSiteAndDatabases($project, $profile, $serverId, (int) $site->id);
             }
@@ -1809,6 +1809,25 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         return true;
+    }
+
+    /** @return array<int, object> */
+    private function siteInventory(object $resource): array
+    {
+        $sites = $this->paginatedData($resource);
+        $ids = [];
+        $domains = [];
+        foreach ($sites as $site) {
+            $id = $site->id ?? null;
+            $domain = $site->domain ?? null;
+            if (! \is_int($id) || $id < 1 || ! \is_string($domain) || $domain === ''
+                || \trim($domain) !== $domain || isset($ids[$id]) || isset($domains[\strtolower($domain)])) {
+                throw new \RuntimeException('Ploi site inventory contains an invalid or duplicate identity.');
+            }
+            $ids[$id] = true;
+            $domains[\strtolower($domain)] = true;
+        }
+        return $sites;
     }
 
     /** @return array<int, object> */

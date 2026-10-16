@@ -250,3 +250,11 @@ string, remain present and unchanged, and match the final number of records.
 A present null current-page value is invalid. Missing optional total/current
 metadata remains supported. These checks reject inconsistent observations;
 they do not create a snapshot or prevent concurrent remote changes.
+
+Site discovery validates the complete inventory before choosing any matching
+domain. Positive integer site IDs and nonempty trimmed domains are required;
+duplicate IDs or domains (including differences only in letter case) block
+planning and execution. Apply, status, site listing, and cleanup use this same
+check, so an early domain match cannot hide a later invalid or duplicate record.
+These observations do not establish independent ownership or prevent a change
+between discovery and a later mutation; the ownership marker is still required.

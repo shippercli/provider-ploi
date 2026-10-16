@@ -11,6 +11,7 @@ test('status resolves later-page sites and refuses unreadable site inventories',
     foreach ([1, 2] as $page) {
         $response = \Mockery::mock(\Ploi\Http\Response::class);
         $data = $page === 1 ? [] : [(object) ['id' => 55, 'domain' => 'preview.example.com']];
+        if ($mode === 'duplicate-domain' && $page === 2) $data[] = (object) ['id' => 56, 'domain' => 'preview.example.com'];
         if ($mode === 'invalid-identity' && $page === 2) $data = [(object) ['domain' => 'preview.example.com']];
         $payload = $mode === 'unreadable' && $page === 2 ? (object) [] : (object) ['data' => $data, 'meta' => (object) ['last_page' => 2]];
         $response->shouldReceive('getJson')->once()->andReturn($payload);
@@ -29,7 +30,7 @@ test('status resolves later-page sites and refuses unreadable site inventories',
         expect(fn () => $provider->status(new stdClass, $profile))->toThrow(RuntimeException::class);
     }
     \Mockery::close();
-})->with(['valid', 'unreadable', 'invalid-identity']);
+})->with(['valid', 'unreadable', 'invalid-identity', 'duplicate-domain']);
 
 function paginationResource(array $pages): object
 {
