@@ -1,4 +1,5 @@
 """Real Guzzle transport checks; all headers, request bodies and response secrets are synthetic."""
+import hashlib
 import http.server
 import json
 from pathlib import Path
@@ -27,7 +28,15 @@ class ResponsesTest(unittest.TestCase):
                 body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 received.append((self.path, self.headers.get('Authorization'), body))
                 procedure = self.path.rsplit('/', 1)[-1]
-                if self.path == '/servers/125/sites/55/env':
+                if self.path == '/servers/126/sites/55/env':
+                    case = self.headers['X-Fixture-Case']
+                    marker = hashlib.sha256(b'["fixture","production"]').hexdigest()
+                    envelope = {'data': {'content': 'SHIPPERCLI_OWNERSHIP=' + marker}}
+                    if case == 'ownership-false': envelope['success'] = False
+                    if case == 'ownership-errors': envelope['errors'] = ['synthetic-secret']
+                    if case == 'ownership-error': envelope['error'] = 'synthetic-secret'
+                    status, payload = 200, json.dumps(envelope).encode()
+                elif self.path == '/servers/125/sites/55/env':
                     if self.command == 'PATCH':
                         environments['partial'] = json.loads(body)['content']
                         partial_events.append('deliver')
@@ -157,7 +166,7 @@ class ResponsesTest(unittest.TestCase):
                 self.assertEqual(partial_events, ['create:main', 'deliver', 'create:analytics', 'create:analytics', 'deliver'])
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 198)
+                self.assertEqual(len(received), 202)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:

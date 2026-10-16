@@ -7,11 +7,11 @@ use Ploi\Resources\Server;
 use Ploi\Resources\Database;
 use ShipperCli\ProviderPloi\PloiProvider;
 
-test('site cleanup requires ownership of the exact project and profile', function (string $content, bool $owned): void {
+test('site cleanup requires ownership of the exact project and profile', function (string $content, bool $owned, array $envelope = []): void {
     $client = m::mock(Ploi::class);
     $server = m::mock(Server::class);
     $site = m::mock(Site::class);
-    $site->shouldReceive('environment->get->getJson')->once()->andReturn((object) ['data' => (object) ['content' => $content]]);
+    $site->shouldReceive('environment->get->getJson')->once()->andReturn((object) [...$envelope, 'data' => (object) ['content' => $content]]);
     $client->shouldReceive('server')->with(123)->times($owned ? 2 : 1)->andReturn($server);
     $server->shouldReceive('sites')->with(55)->times($owned ? 2 : 1)->andReturn($site);
     if ($owned) {
@@ -39,6 +39,9 @@ test('site cleanup requires ownership of the exact project and profile', functio
     expect($result)->toBe($owned);
 })->with([
     ['', false],
+    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR)), false, ['success' => false]],
+    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR)), false, ['errors' => ['synthetic-secret']]],
+    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR)), false, ['error' => 'synthetic-secret']],
     ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['other', 'preview'], JSON_THROW_ON_ERROR)), false],
     ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'production'], JSON_THROW_ON_ERROR)), false],
     ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR)), true],

@@ -2110,10 +2110,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
     protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void
     {
-        $response = $this->getClient()->server($serverId)->sites($siteId)->environment()->get();
-        $content = $response->getJson()->data->content ?? null;
         try {
-            $values = \is_string($content) ? $this->parseCompleteEnvironment($content) : [];
+            [, $values] = $this->readSiteEnvironment($this->getClient()->server($serverId)->sites($siteId)->environment());
         } catch (\Throwable) {
             $values = [];
         }

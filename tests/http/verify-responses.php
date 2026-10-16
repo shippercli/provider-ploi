@@ -203,3 +203,22 @@ foreach (['final-valid', 'final-ignored'] as $case) {
     }
 }
 echo "Final environment real SDK readback controls passed\n";
+
+
+foreach (['valid', 'false', 'errors', 'error'] as $case) {
+    $api = new PloiApiClient('synthetic-authorization-secret', new Client(['base_uri' => $argv[1].'/',
+        'headers' => ['X-Fixture-Case' => 'ownership-'.$case]]));
+    $provider = new class($api) extends \ShipperCli\ProviderPloi\PloiProvider {
+        public function __construct(private \Ploi\Ploi $client) { parent::__construct(); }
+        protected function getClient(): \Ploi\Ploi { return $this->client; }
+    };
+    $project = new class { public function name(): string { return 'fixture'; } };
+    $profile = new class { public function name(): string { return 'production'; } };
+    $failure = null;
+    try { (new ReflectionMethod($provider, 'assertSiteOwnership'))->invoke($provider, $project, $profile, 126, 55); }
+    catch (RuntimeException $error) { $failure = $error; }
+    if (($failure === null) !== ($case === 'valid') || ($failure !== null && str_contains($failure->getMessage(), 'synthetic-secret'))) {
+        throw new RuntimeException('Ownership accepted a failed environment response or exposed diagnostics');
+    }
+}
+echo "Four real SDK ownership envelope controls passed\n";
