@@ -471,6 +471,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 );
                 foreach ($this->paginatedData($server->databases()) as $db) {
                     if (\property_exists($db, 'name') && $db->name === $dbName && \property_exists($db, 'id')) {
+                        $this->assertDatabaseSiteAssociation($db, $siteId, $dbName);
                         try {
                             $server->databases((int) $db->id)->delete();
                         } catch (\Throwable $exception) {
@@ -1629,12 +1630,19 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 }
 
                 try {
+                    $this->assertDatabaseSiteAssociation($existingDatabase, $siteId, $dbName);
                     $server->databases((int) $existingDatabase->id)->delete();
                 } catch (\Throwable $exception) {
                     $databaseErrors[] = "Failed to delete database {$dbName}: ".$exception->getMessage();
                 }
                 break;
             }
+        }
+
+        if ($databaseErrors !== []) {
+            $this->lastError = \implode("\n", $databaseErrors);
+
+            return false;
         }
 
         try {
@@ -1709,6 +1717,14 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /**
      * @param array{mode:string,id?:mixed,cleanup?:mixed,ttl?:mixed,spec?:array<string,mixed>} $server
      */
+    private function assertDatabaseSiteAssociation(object $database, int $siteId, string $name): void
+    {
+        $site = $database->site ?? null;
+        if (! \is_object($site) || ! \property_exists($site, 'id') || (int) $site->id !== $siteId) {
+            throw new \RuntimeException("Refusing to delete Ploi database {$name}: its association with site {$siteId} cannot be proven");
+        }
+    }
+
     private function managedServerName(object $project, object $profile, array $server): string
     {
         $prefix = self::MANAGED_SERVER_PREFIX.'-'.$this->slugify($this->projectName($project)).'-'.$this->slugify($this->profileName($profile));

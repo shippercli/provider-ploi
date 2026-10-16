@@ -846,7 +846,7 @@ test('provider package lists sites across every page', function (): void {
     ]);
 });
 
-test('database deletion failure is reported after site deletion is attempted', function (): void {
+test('unsafe database cleanup preserves the site', function (bool $associated): void {
     $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
     $lifecycleClient->shouldReceive('get')->with(123)->once()->andReturn((object) ['id' => 123]);
     $client = m::mock(Ploi::class);
@@ -862,17 +862,21 @@ test('database deletion failure is reported after site deletion is attempted', f
         'meta' => (object) ['last_page' => 2],
     ]);
     $secondResponse->shouldReceive('getJson')->andReturn((object) [
-        'data' => [(object) ['id' => 9, 'name' => 'api_preview']],
+        'data' => [(object) ['id' => 9, 'name' => 'api_preview', 'site' => (object) ['id' => $associated ? 55 : 999]]],
         'meta' => (object) ['last_page' => 2],
     ]);
     $siteDeleteResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Site deleted']);
     $databases->shouldReceive('page')->with(1, 50)->once()->andReturn($firstResponse);
     $databases->shouldReceive('page')->with(2, 50)->once()->andReturn($secondResponse);
-    $database->shouldReceive('delete')->once()->andThrow(new RuntimeException('permission denied'));
-    $site->shouldReceive('delete')->once()->andReturn($siteDeleteResponse);
+    if ($associated) {
+        $database->shouldReceive('delete')->once()->andThrow(new RuntimeException('permission denied'));
+        $server->shouldReceive('databases')->with(9)->once()->andReturn($database);
+    } else {
+        $database->shouldNotReceive('delete');
+    }
+    $site->shouldNotReceive('delete');
     $server->shouldReceive('databases')->withNoArgs()->once()->andReturn($databases);
-    $server->shouldReceive('databases')->with(9)->once()->andReturn($database);
-    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $server->shouldNotReceive('sites');
     $client->shouldReceive('server')->with(123)->once()->andReturn($server);
     $provider = new class($client, $lifecycleClient) extends PloiProvider
     {
@@ -918,8 +922,8 @@ test('database deletion failure is reported after site deletion is attempted', f
     };
 
     expect($provider->deleteSiteWithDatabases($project, makePluginProfile(), 55))->toBeFalse()
-        ->and($provider->getLastError())->toContain('Failed to delete database api_preview: permission denied');
-});
+        ->and($provider->getLastError())->toContain($associated ? 'permission denied' : 'association with site 55 cannot be proven');
+})->with([true, false]);
 
 test('create-mode retain cleanup deletes the profile site but retains the server', function (): void {
     $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
