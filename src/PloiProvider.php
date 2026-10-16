@@ -1815,7 +1815,10 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
     private function siteOwnershipMarker(object $project, object $profile): string
     {
-        return \hash('sha256', $this->projectName($project).'|'.$this->profileName($profile));
+        return \hash('sha256', \json_encode([
+            $this->projectName($project),
+            $this->profileName($profile),
+        ], JSON_THROW_ON_ERROR));
     }
 
     protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void

@@ -221,4 +221,4 @@ test('apply refuses an unmanaged or differently scoped Ploi site before mutation
 
     expect($provider->apply($project, $profile))->toBeFalse()
         ->and($provider->getLastError())->toContain('matching Shipper ownership evidence is missing');
-})->with(['', 'APP_ENV=production', 'SHIPPERCLI_OWNERSHIP='.hash('sha256', 'other|preview')]);
+})->with(['', 'APP_ENV=production', 'SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['other', 'preview'], JSON_THROW_ON_ERROR))]);

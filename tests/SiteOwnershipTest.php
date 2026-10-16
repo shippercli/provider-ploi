@@ -33,7 +33,20 @@ test('site cleanup requires ownership of the exact project and profile', functio
     expect($result)->toBe($owned);
 })->with([
     ['', false],
-    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', 'other|preview'), false],
-    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', 'api|production'), false],
-    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', 'api|preview'), true],
+    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['other', 'preview'], JSON_THROW_ON_ERROR)), false],
+    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'production'], JSON_THROW_ON_ERROR)), false],
+    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR)), true],
+    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', 'api|preview'), false],
 ]);
+
+test('ownership markers distinguish scopes containing delimiters', function (): void {
+    $provider = new PloiProvider();
+    $named = fn (string $name) => new class($name) {
+        public function __construct(private string $value) {}
+        public function name(): string { return $this->value; }
+    };
+    $marker = new ReflectionMethod(PloiProvider::class, 'siteOwnershipMarker');
+
+    expect($marker->invoke($provider, $named('api|preview'), $named('test')))
+        ->not->toBe($marker->invoke($provider, $named('api'), $named('preview|test')));
+});

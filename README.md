@@ -124,7 +124,9 @@ site and their credentials available in the application environment.
 ## Site ownership
 
 New deployments persist `SHIPPERCLI_OWNERSHIP` in the site's environment. Its
-value is the SHA-256 hash of the exact `project-name|profile-name` pair. Re-apply,
+value is the SHA-256 hash of the JSON-encoded `[project-name, profile-name]` array
+(PHP `json_encode` with `JSON_THROW_ON_ERROR`). Encoding the pair preserves its
+boundaries even when names contain delimiters. Re-apply,
 destroy, and preview cleanup require this persisted marker before modifying an
 existing site. Matching a domain alone does not establish ownership.
 
