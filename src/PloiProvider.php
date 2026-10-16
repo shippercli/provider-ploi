@@ -1375,22 +1375,32 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @param array<string, mixed> $variables */
     private function mergeEnvironment(string $content, array $variables): string
     {
-        $lines = $content === '' ? [] : \preg_split('/\r?\n/', $content);
-        $values = [];
-        foreach (\is_array($lines) ? $lines : [] as $line) {
-            if (\str_contains($line, '=')) {
-                [$key, $value] = \explode('=', $line, 2);
-                $values[$key] = $value;
-            }
-        }
-
         foreach ($variables as $key => $value) {
-            if (\is_string($key) && \is_scalar($value)) {
-                $values[$key] = (string) $value;
+            if (! \is_string($key) || \preg_match('/\A[A-Za-z_][A-Za-z0-9_]*\z/', $key) !== 1) {
+                throw new \InvalidArgumentException('Invalid environment variable name.');
+            }
+            if (! \is_scalar($value)) {
+                continue;
+            }
+            $value = (string) $value;
+            if ($value === '' || \preg_match('/[\s#=\\\\"\x27$]/', $value) === 1) {
+                $value = '"'.\str_replace(
+                    ['\\', '"', '$', "\r", "\n"],
+                    ['\\\\', '\\"', '\\$', '\\r', '\\n'],
+                    $value,
+                ).'"';
+            }
+            $line = $key.'='.$value;
+            // Match a complete assignment, including an existing quoted multiline value.
+            $pattern = '/^(?:export[ \t]+)?'.\preg_quote($key, '/').'[ \t]*=[ \t]*(?:"(?:\\\\.|[^"\\\\])*"|\x27[^\x27]*\x27|[^\r\n]*)[^\r\n]*(?:\r?\n|$)/m';
+            if (\preg_match($pattern, $content) === 1) {
+                $content = (string) \preg_replace_callback($pattern, static fn (): string => $line."\n", $content);
+            } else {
+                $content = \rtrim($content, "\r\n")."\n".$line."\n";
             }
         }
 
-        return \implode("\n", \array_map(static fn (string $key, string $value): string => "{$key}={$value}", \array_keys($values), $values));
+        return $content;
     }
 
     private function profileDomain(object $profile): string
