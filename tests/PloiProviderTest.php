@@ -999,7 +999,7 @@ test('create-mode retain cleanup deletes the profile site but retains the server
     ))->toBeTrue();
 });
 
-test('existing-site apply refreshes repository and validates deployment polling', function (mixed $poll, bool $valid, bool $timedOut = false, bool $slowRead = false): void {
+test('existing-site apply refreshes repository and validates deployment polling', function (mixed $poll, bool $valid, bool $timedOut = false, bool $slowRead = false, bool $triggerSuccess = true): void {
     $operations = [];
     $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
     $lifecycleClient->shouldReceive('get')->with(123)->once()->andReturn((object) ['id' => 123, 'status' => 'active']);
@@ -1011,6 +1011,7 @@ test('existing-site apply refreshes repository and validates deployment polling'
     $deployment = m::mock(Deployment::class);
     $installResponse = m::mock(Response::class);
     $deployResponse = m::mock(Response::class);
+    $deployResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Deployment has been started', 'success' => $triggerSuccess]);
     $siteListResponse = m::mock(Response::class);
     $siteStatusResponse = m::mock(Response::class);
     $siteListResponse->shouldReceive('getJson')->andReturn((object) [
@@ -1035,9 +1036,9 @@ test('existing-site apply refreshes repository and validates deployment polling'
     });
     $site->shouldReceive('repository')->once()->andReturn($repository);
     $site->shouldReceive('deployment')->once()->andReturn($deployment);
-    $site->shouldReceive('get')->once()->andReturn($siteStatusResponse);
+    $site->shouldReceive('get')->times($triggerSuccess ? 1 : 0)->andReturn($siteStatusResponse);
     $server->shouldReceive('sites')->withNoArgs()->once()->andReturn($siteCollection);
-    $server->shouldReceive('sites')->with(55)->times(3)->andReturn($site);
+    $server->shouldReceive('sites')->with(55)->times($triggerSuccess ? 3 : 2)->andReturn($site);
     $client->shouldReceive('server')->with(123)->once()->andReturn($server);
     $provider = new class($client, $lifecycleClient, $operations) extends PloiProvider
     {
@@ -1111,9 +1112,10 @@ test('existing-site apply refreshes repository and validates deployment polling'
     expect($result)->toBe($valid)
         ->and($operations)->toBe([...['repository', 'aliases', 'deploy-script', 'environment', 'ssl', 'deploy'], ...($valid ? ['workloads'] : [])]);
     if ($valid) expect($provider->getLastError())->toBe('');
-    else expect($provider->getLastError())->toContain($timedOut ? 'Deployment timeout after 1 seconds.' : 'Ploi returned an invalid deployment site response.');
+    else expect($provider->getLastError())->toContain(!$triggerSuccess ? 'Ploi did not confirm the deployment trigger.' : ($timedOut ? 'Deployment timeout after 1 seconds.' : 'Ploi returned an invalid deployment site response.'));
 })->with([
     [(object) ['data' => (object) ['id' => 55, 'server_id' => 123, 'status' => 'active']], true],
+    [(object) ['data' => (object) ['id' => 55, 'status' => 'active']], false, false, false, false],
     [(object) ['data' => (object) ['id' => 55, 'status' => 'deploying']], false, true],
     [(object) ['data' => (object) ['id' => 55, 'status' => 'active']], false, true, true],
     [(object) ['data' => (object) ['id' => 56, 'status' => 'active']], false],

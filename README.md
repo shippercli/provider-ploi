@@ -250,3 +250,9 @@ after expiry. Sleep is capped to remaining time, and a response arriving after
 the deadline cannot report success. An in-flight SDK request can still take its
 configured transport timeout to return; the local deployment deadline does not
 cancel that request or the remote operation.
+
+The deployment trigger must return the documented `Deployment has been started`
+acknowledgment without explicit errors before polling begins. Missing or failed
+acknowledgments stop the local flow. This response only acknowledges a start;
+it does not prove completion, and an ambiguous response does not prove that the
+remote deployment failed to start. Inspect remote state before retrying.

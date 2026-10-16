@@ -240,3 +240,18 @@ foreach (['active', 'deploying', 'failed', 'wrong-id', 'wrong-server', 'missing-
     }
 }
 echo "Eight real SDK deployment site response checks passed\n";
+
+
+foreach (['valid', 'false', 'errors', 'missing'] as $case) {
+    $api = new PloiApiClient('synthetic-authorization-secret', new Client(['base_uri' => $argv[1].'/',
+        'headers' => ['X-Fixture-Case' => 'trigger-'.$case]]));
+    $provider = new \ShipperCli\ProviderPloi\PloiProvider;
+    $failure = null;
+    try { (new ReflectionMethod($provider, 'startDeployment'))->invoke($provider, $api->server(128)->sites(55)); }
+    catch (RuntimeException $error) { $failure = $error; }
+    if (($failure === null) !== ($case === 'valid')
+        || ($failure !== null && ($failure->getMessage() !== 'Ploi did not confirm the deployment trigger.' || $failure->getPrevious() !== null))) {
+        throw new RuntimeException('Invalid deployment acknowledgment accepted or exposed');
+    }
+}
+echo "Four real SDK deployment trigger acknowledgment controls passed\n";

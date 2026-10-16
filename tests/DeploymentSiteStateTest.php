@@ -13,3 +13,16 @@ test('deployment state follows documented status without trusting a missing depl
     ['building', null, 'pending'], ['repository-installing', null, 'pending'],
     ['deploy-failed', null, 'failed'],
 ]);
+
+
+test('deployment trigger refuses unconfirmed acknowledgments', function (mixed $json): void {
+    $site = \Mockery::mock(\Ploi\Resources\Site::class);
+    $site->shouldReceive('deployment->deploy->getJson')->once()->andReturn($json);
+    $provider = new PloiProvider;
+    expect(fn () => (new ReflectionMethod($provider, 'startDeployment'))->invoke($provider, $site))
+        ->toThrow(RuntimeException::class, 'Ploi did not confirm the deployment trigger.');
+})->with([
+    [null], [(object) []], [(object) ['message' => 'unexpected synthetic-secret']],
+    [(object) ['message' => 'Deployment has been started', 'errors' => ['synthetic-secret']]],
+    [(object) ['message' => 'Deployment has been started', 'error' => 'synthetic-secret']],
+]);

@@ -363,7 +363,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
 
             $site = $server->sites($siteId);
-            $site->deployment()->deploy();
+            $this->startDeployment($site);
 
             $timeout = $this->getDeploymentTimeout();
             $pollInterval = 5;
@@ -411,6 +411,21 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $this->lastError = 'Deployment error: '.$e->getMessage().' (Type: '.\get_class($e).')';
 
             return false;
+        }
+    }
+
+    private function startDeployment(object $site): void
+    {
+        try {
+            $response = $site->deployment()->deploy()->getJson();
+            if (! \is_object($response) || ($response->errors ?? []) !== []
+                || ! \in_array($response->error ?? null, [null, '', false], true)
+                || (\property_exists($response, 'success') && $response->success !== true)
+                || ($response->message ?? null) !== 'Deployment has been started') {
+                throw new \RuntimeException('Unconfirmed deployment.');
+            }
+        } catch (\Throwable) {
+            throw new \RuntimeException('Ploi did not confirm the deployment trigger.');
         }
     }
 
