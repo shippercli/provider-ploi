@@ -197,3 +197,12 @@ class map. Dependency classes come from the installed checkout; this check does
 not perform a fresh production dependency install or live deployment. CI runs it
 with the existing provider tests. Git export verification uses current worktree
 attributes; committed attributes determine subsequent GitHub source archives.
+
+### Complete environment input
+
+Existing application environments must parse completely before their database
+credentials are trusted. An unfinished double-quoted value at the end of the
+file is rejected even if valid credentials appear earlier; phpdotenv otherwise
+silently drops that unfinished value. Complete multiline passwords remain
+supported. The internal completeness probe is removed from parsed values.
+The same completeness check applies before trusting the site ownership marker.

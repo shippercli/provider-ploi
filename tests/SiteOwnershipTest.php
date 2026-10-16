@@ -46,6 +46,7 @@ test('site cleanup requires ownership of the exact project and profile', functio
     ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR))."\nSHIPPERCLI_OWNERSHIP=other", false],
     ["COMMENT=\"multiline\nSHIPPERCLI_OWNERSHIP=".hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR))."\ntext\"", false],
     ['SHIPPERCLI_OWNERSHIP="unterminated', false],
+    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR))."\nBROKEN=\"unfinished", false],
     ['export SHIPPERCLI_OWNERSHIP = "'.hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR)).'" # managed', true],
 ]);
 

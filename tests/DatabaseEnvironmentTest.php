@@ -81,7 +81,9 @@ test('existing Ploi databases require available matching application credentials
     ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api", false],
     ["DB_HOST=127.0.0.1\nDB_DATABASE=other\nDB_USERNAME=api\nDB_PASSWORD=retained-secret", false],
     ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=''", false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=\"line one\nline two\"", true],
     ["DB_PASSWORD=\"unterminated", false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=retained-secret\nBROKEN=\"unfinished", false],
 ]);
 
 

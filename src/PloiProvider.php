@@ -460,6 +460,18 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
     }
 
+    /** @return array<string, mixed> */
+    private function parseCompleteEnvironment(string $content): array
+    {
+        $probe = '__SHIPPER_ENV_END_'.\bin2hex(\random_bytes(16));
+        $values = \Dotenv\Dotenv::parse($content."\n".$probe."=1\n");
+        if (($values[$probe] ?? null) !== '1') {
+            throw new \RuntimeException('Application environment input is incomplete.');
+        }
+        unset($values[$probe]);
+        return $values;
+    }
+
     /** @return array<string, string> */
     private function configuredDatabasePasswords(object $project, object $profile): array
     {
@@ -509,7 +521,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                     $prefix = $prefixes[$this->databaseValue($database, 'name')];
                     $content = $server->sites($siteId)->environment()->get()->getJson()->data->content ?? '';
                     try {
-                        $available = [...\Dotenv\Dotenv::parse(\is_string($content) ? $content : ''), ...$this->configuredEnvironment($project, $profile)];
+                        $available = [...$this->parseCompleteEnvironment(\is_string($content) ? $content : ''), ...$this->configuredEnvironment($project, $profile)];
                     } catch (\Throwable) {
                         $this->lastError = 'Cannot parse the existing Ploi site environment; review its connection settings before reusing a database.';
 
@@ -2057,7 +2069,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $response = $this->getClient()->server($serverId)->sites($siteId)->environment()->get();
         $content = $response->getJson()->data->content ?? null;
         try {
-            $values = \is_string($content) ? \Dotenv\Dotenv::parse($content) : [];
+            $values = \is_string($content) ? $this->parseCompleteEnvironment($content) : [];
         } catch (\Throwable) {
             $values = [];
         }
