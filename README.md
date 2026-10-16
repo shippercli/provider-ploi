@@ -101,6 +101,24 @@ projects:
 
 Created servers are marked as Shipper-managed using a deterministic managed name based on project, profile, and configured server name. Cleanup only deletes servers that match that managed identity.
 
+## Site ownership
+
+New deployments persist `SHIPPERCLI_OWNERSHIP` in the site's environment. Its
+value is the SHA-256 hash of the exact `project-name|profile-name` pair. Re-apply,
+destroy, and preview cleanup require this persisted marker before modifying an
+existing site. Matching a domain alone does not establish ownership.
+
+Existing installations created before this marker was introduced fail closed.
+Review the site's identity, project/profile scope, and all attached databases
+before explicitly recording the marker in its environment through Ploi. Shipper
+does not automatically adopt unmarked sites. Preserve the marker in any custom
+environment-management automation. If deployment fails before the marker is
+persisted, inspect the partially created site before retrying or removing it.
+
+Database cleanup also requires Ploi's returned `site.id` to match the deployment
+site. Missing or different associations block deletion. A database deletion
+failure preserves the site so its connection details remain available.
+
 ## License
 
 MIT

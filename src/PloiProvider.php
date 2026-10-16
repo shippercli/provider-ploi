@@ -309,12 +309,14 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 }
 
                 $siteId = (int) $existingSite->id;
+                $this->assertSiteOwnership($project, $profile, $serverId, $siteId);
             }
 
             $server->sites($siteId)->repository()->install($repoProvider, $branch, $repoName);
 
             $this->lastServerId = $serverId;
             $this->lastSiteId = $siteId;
+            $this->generatedEnvironment = ['SHIPPERCLI_OWNERSHIP' => $this->siteOwnershipMarker($project, $profile)];
 
             foreach ($this->projectDatabases($project) as $database) {
                 $dbName = $this->interpolateDatabaseName(
@@ -347,8 +349,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 if (! $exists) {
                     $password = $this->generateDatabasePassword();
                     $server->databases()->create($dbName, $dbUser, $password, null, $siteId);
-                    if ($this->generatedEnvironment === []) {
-                        $this->generatedEnvironment = [
+                    if (! isset($this->generatedEnvironment['DB_PASSWORD'])) {
+                        $this->generatedEnvironment = [...$this->generatedEnvironment,
                             'DB_DATABASE' => $dbName,
                             'DB_USERNAME' => $dbUser,
                             'DB_PASSWORD' => $password,
@@ -463,6 +465,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
 
             $siteId = (int) $existingSite->id;
+            $this->assertSiteOwnership($project, $profile, (int) $this->getServerId($profile), $siteId);
             foreach ($this->projectDatabases($project) as $database) {
                 $dbName = $this->interpolateDatabaseName(
                     $this->databaseValue($database, 'name'),
@@ -520,6 +523,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $sites = [];
         foreach ($this->paginatedData($this->getClient()->server($serverId)->sites()) as $site) {
             if (\property_exists($site, 'id') && \property_exists($site, 'domain')) {
+                try {
+                    $this->assertSiteOwnership($project, $profile, $serverId, (int) $site->id);
+                } catch (\Throwable) {
+                    continue;
+                }
                 $sites[] = ['site_id' => (int) $site->id, 'domain' => (string) $site->domain];
             }
         }
@@ -1613,6 +1621,13 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
     private function deleteSiteAndDatabases(object $project, object $profile, int $serverId, int $siteId): bool
     {
+        try {
+            $this->assertSiteOwnership($project, $profile, $serverId, $siteId);
+        } catch (\Throwable $exception) {
+            $this->lastError = $exception->getMessage();
+
+            return false;
+        }
         $server = $this->getClient()->server($serverId);
         $databaseErrors = [];
         $databases = $this->paginatedData($server->databases());
@@ -1722,6 +1737,21 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $site = $database->site ?? null;
         if (! \is_object($site) || ! \property_exists($site, 'id') || (int) $site->id !== $siteId) {
             throw new \RuntimeException("Refusing to delete Ploi database {$name}: its association with site {$siteId} cannot be proven");
+        }
+    }
+
+    private function siteOwnershipMarker(object $project, object $profile): string
+    {
+        return \hash('sha256', $this->projectName($project).'|'.$this->profileName($profile));
+    }
+
+    protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void
+    {
+        $response = $this->getClient()->server($serverId)->sites($siteId)->environment()->get();
+        $content = $response->getJson()->data->content ?? null;
+        $marker = 'SHIPPERCLI_OWNERSHIP='.$this->siteOwnershipMarker($project, $profile);
+        if (! \is_string($content) || ! \in_array($marker, \preg_split('/\r?\n/', $content) ?: [], true)) {
+            throw new \RuntimeException("Refusing to modify Ploi site {$siteId}: matching Shipper ownership evidence is missing");
         }
     }
 

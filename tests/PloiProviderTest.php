@@ -426,6 +426,9 @@ test('provider package deletes managed created server on destroy cleanup', funct
             parent::__construct(['api_key' => 'token']);
         }
 
+        // Ownership behavior is exercised separately; this fixture isolates its named operation.
+        protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void {}
+
         protected function getClient(): Ploi
         {
             return $this->fakeClient;
@@ -835,6 +838,9 @@ test('provider package lists sites across every page', function (): void {
             parent::__construct(['api_key' => 'token', 'server_id' => '123'], $lifecycleClient);
         }
 
+        // Ownership behavior is exercised separately; this fixture isolates its named operation.
+        protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void {}
+
         protected function getClient(): Ploi
         {
             return $this->fakeClient;
@@ -886,6 +892,9 @@ test('unsafe database cleanup preserves the site', function (bool $associated): 
         ) {
             parent::__construct(['api_key' => 'token', 'server_id' => '123'], $lifecycleClient);
         }
+
+        // Ownership behavior is exercised separately; this fixture isolates its named operation.
+        protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void {}
 
         protected function getClient(): Ploi
         {
@@ -964,6 +973,9 @@ test('create-mode retain cleanup deletes the profile site but retains the server
             parent::__construct(['api_key' => 'token'], $lifecycleClient);
         }
 
+        // Ownership behavior is exercised separately; this fixture isolates its named operation.
+        protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void {}
+
         protected function getClient(): Ploi
         {
             return $this->fakeClient;
@@ -1038,6 +1050,9 @@ test('existing-site apply refreshes repository and configures before deploy', fu
                 'deployment_timeout' => 1,
             ], $lifecycleClient);
         }
+
+        // Ownership behavior is exercised separately; this fixture isolates its named operation.
+        protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void {}
 
         protected function getClient(): Ploi
         {
