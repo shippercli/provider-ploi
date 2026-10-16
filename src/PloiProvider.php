@@ -70,7 +70,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $errors = [];
         try {
             $this->databaseEnvironmentPrefixes($project);
-        } catch (\InvalidArgumentException $exception) {
+            $this->assertUniqueResolvedDatabaseNames($project, $profile);
+        } catch (\InvalidArgumentException|\RuntimeException $exception) {
             $errors[] = $exception->getMessage();
         }
 
@@ -185,6 +186,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
     public function plan(object $project, object $profile): array
     {
+        $this->assertUniqueResolvedDatabaseNames($project, $profile);
         $server = $this->extractServerLifecycle($profile);
         $serverId = $server !== null && ($server['mode'] ?? null) === 'create' ? null : $this->getServerId($profile);
         $actions = [];
@@ -285,6 +287,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $serverId = 0;
 
         try {
+            $this->assertUniqueResolvedDatabaseNames($project, $profile);
             $serverId = $this->resolveServerIdForProfile($project, $profile, true);
             $serverLifecycle = $this->extractServerLifecycle($profile);
             if (($serverLifecycle['mode'] ?? null) === 'create') {
@@ -441,8 +444,22 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         return $prefixes;
     }
 
+    private function assertUniqueResolvedDatabaseNames(object $project, object $profile): void
+    {
+        $names = [];
+        foreach ($this->projectDatabases($project) as $database) {
+            $name = $this->interpolateDatabaseName($this->databaseValue($database, 'name'),
+                $this->projectName($project), $this->profileName($profile));
+            if (\in_array($name, $names, true)) {
+                throw new \InvalidArgumentException('Resolved Ploi database names must be unique.');
+            }
+            $names[] = $name;
+        }
+    }
+
     private function applyDatabases(object $server, int $siteId, object $project, object $profile): bool
     {
+        $this->assertUniqueResolvedDatabaseNames($project, $profile);
         $prefixes = $this->databaseEnvironmentPrefixes($project);
         foreach ($this->projectDatabases($project) as $database) {
             $dbName = $this->interpolateDatabaseName(
@@ -523,6 +540,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $this->lastError = '';
 
         try {
+            $this->assertUniqueResolvedDatabaseNames($project, $profile);
             $serverConfig = $this->extractServerLifecycle($profile);
             if ($serverConfig !== null && ($serverConfig['mode'] ?? null) === 'create') {
                 $serverId = $this->resolveServerIdForProfile($project, $profile);

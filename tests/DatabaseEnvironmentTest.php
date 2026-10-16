@@ -113,3 +113,27 @@ test('database creation refuses unconfirmed identities before recording credenti
     [(object) ['success' => false, 'data' => (object) ['id' => 9, 'name' => 'main']]],
     [(object) ['errors' => ['synthetic-secret'], 'data' => (object) ['id' => 9, 'name' => 'main']]],
 ]);
+
+
+test('resolved Ploi database name collisions stop before database API calls', function (): void {
+    $project = new class {
+        public function name(): string { return 'api'; }
+        public function databases(): array { return array_map(static fn (string $name): object => new class($name) {
+            public function __construct(private string $databaseName) {}
+            public function name(): string { return $this->databaseName; }
+            public function user(): string { return 'fixture_user'; }
+        }, ['${PROJECT_NAME}_${PROFILE}', 'api_production']); }
+    };
+    $profile = new class { public function name(): string { return 'production'; } };
+    $server = m::mock(Server::class);
+    $server->shouldNotReceive('databases');
+    $provider = new PloiProvider(['database_environment_prefixes' => ['${PROJECT_NAME}_${PROFILE}' => 'DB', 'api_production' => 'OTHER_DB']]);
+    expect(fn () => (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, $project, $profile))
+        ->toThrow(InvalidArgumentException::class, 'Resolved Ploi database names must be unique.');
+    expect($provider->validate($project, $profile))->toContain('Resolved Ploi database names must be unique.');
+    expect(fn () => $provider->plan($project, $profile))->toThrow(InvalidArgumentException::class, 'Resolved Ploi database names must be unique.');
+    expect($provider->apply($project, $profile))->toBeFalse()
+        ->and($provider->getLastError())->toContain('Resolved Ploi database names must be unique.');
+    expect($provider->destroy($project, $profile))->toBeFalse()
+        ->and($provider->getLastError())->toContain('Resolved Ploi database names must be unique.');
+});

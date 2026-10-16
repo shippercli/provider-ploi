@@ -91,7 +91,7 @@ test('validate rejects an unresolved API key placeholder', function (): void {
 
 test('database interpolation fails when a preview variable is missing', function (): void {
     putenv('GITHUB_PR_NUMBER');
-    $provider = emptyInventoryPlanProvider();
+    $provider = new PloiProvider(['api_key' => 'token', 'server_id' => '123']);
     $project = environmentVariableProject([
         environmentVariableDatabase(
             'shipper_${PROJECT_NAME}_${PROFILE}_${GITHUB_PR_NUMBER}',
