@@ -177,3 +177,16 @@ Unit tests cover actual SDK resource routing, token rotation, timeout/default
 option enforcement, typed errors, and safe transport diagnostics. CI runs the
 HTTP regression alongside the PHP matrix. Live Ploi compatibility, successful
 API data, and application log redaction are outside this check.
+
+
+### Distribution archive checks
+
+Composer archive exclusions and Git export attributes omit installed dependencies,
+tests, workflow files, root environment/auth configuration, and PHPUnit caches and
+configuration. Runtime source, package metadata, documentation, and assets remain
+available. `python3 tests/package/verify-dist.py` checks Composer and Git exports,
+then loads all declared runtime classes from an extracted ZIP with an overridden
+class map. Dependency classes come from the installed checkout; this check does
+not perform a fresh production dependency install or live deployment. CI runs it
+with the existing provider tests. Git export verification uses current worktree
+attributes; committed attributes determine subsequent GitHub source archives.

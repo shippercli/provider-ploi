@@ -38,5 +38,16 @@
         }
     },
     "minimum-stability": "stable",
-    "prefer-stable": true
+    "prefer-stable": true,
+    "archive": {
+        "exclude": [
+            "/vendor",
+            "/tests",
+            "/.github",
+            "/.env*",
+            "/auth.json",
+            "/.phpunit*",
+            "/phpunit.xml*"
+        ]
+    }
 }
