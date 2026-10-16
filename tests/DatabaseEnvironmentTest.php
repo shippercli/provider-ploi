@@ -24,13 +24,14 @@ test('all new Ploi databases deliver distinct connection environments and retain
     $server = m::mock(Server::class);
     $databases = m::mock(Database::class);
     $page = m::mock(Response::class);
-    $created = m::mock(Response::class);
     $page->shouldReceive('getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
     $databases->shouldReceive('page')->with(1, 50)->twice()->andReturn($page);
     $passwords = [];
-    $databases->shouldReceive('create')->twice()->andReturnUsing(function (string $name, string $user, string $password, mixed $description, int $site) use (&$passwords, $created): Response {
+    $databases->shouldReceive('create')->twice()->andReturnUsing(function (string $name, string $user, string $password, mixed $description, int $site) use (&$passwords): Response {
         expect($site)->toBe(55)->and($user)->toBe('api_production_'.$name);
         $passwords[$name] = $password;
+        $created = m::mock(Response::class);
+        $created->shouldReceive('getJson')->once()->andReturn((object) ['data' => (object) ['id' => count($passwords), 'name' => $name]]);
         return $created;
     });
     $server->shouldReceive('databases')->times(4)->andReturn($databases);
@@ -81,4 +82,34 @@ test('existing Ploi databases require available matching application credentials
     ["DB_HOST=127.0.0.1\nDB_DATABASE=other\nDB_USERNAME=api\nDB_PASSWORD=retained-secret", false],
     ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=''", false],
     ["DB_PASSWORD=\"unterminated", false],
+]);
+
+
+test('database creation refuses unconfirmed identities before recording credentials', function (mixed $json): void {
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $page = m::mock(Response::class);
+    $created = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->with(1, 50)->once()->andReturn($page);
+    $databases->shouldReceive('create')->once()->andReturn($created);
+    $created->shouldReceive('getJson')->once()->andReturn($json);
+    $server->shouldReceive('databases')->twice()->andReturn($databases);
+    $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    $failure = null;
+    try {
+        (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), new stdClass);
+    } catch (RuntimeException $error) {
+        $failure = $error;
+    }
+    expect($failure)->toBeInstanceOf(RuntimeException::class)
+        ->and($failure?->getMessage())->toBe('Ploi did not confirm the requested database creation identity.')
+        ->and((new ReflectionProperty($provider, 'generatedEnvironment'))->getValue($provider))->toBe([]);
+})->with([
+    [null], [(object) []],
+    [(object) ['data' => (object) ['id' => 0, 'name' => 'main']]],
+    [(object) ['data' => (object) ['id' => 9, 'name' => 'foreign']]],
+    [(object) ['data' => (object) ['id' => 9, 'name' => 'main', 'site' => (object) ['id' => 56]]]],
+    [(object) ['success' => false, 'data' => (object) ['id' => 9, 'name' => 'main']]],
+    [(object) ['errors' => ['synthetic-secret'], 'data' => (object) ['id' => 9, 'name' => 'main']]],
 ]);
