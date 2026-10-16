@@ -709,32 +709,12 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
 
             $siteId = (int) $existingSite->id;
-            $this->assertSiteOwnership($project, $profile, (int) $this->getServerId($profile), $siteId);
-            foreach ($this->projectDatabases($project) as $database) {
-                $dbName = $this->interpolateDatabaseName(
-                    $this->databaseValue($database, 'name'),
-                    $this->projectName($project),
-                    $this->profileName($profile),
-                );
-                foreach ($this->databaseInventory($server->databases()) as $db) {
-                    if (\property_exists($db, 'name') && $db->name === $dbName && \property_exists($db, 'id')) {
-                        $this->assertDatabaseSiteAssociation($db, $siteId, $dbName);
-                        try {
-                            $this->deleteDatabaseAndVerify($server, (int) $db->id, $dbName);
-                        } catch (\Throwable $exception) {
-                            $this->lastError = "Failed to delete database {$dbName}: ".$exception->getMessage();
-
-                            return false;
-                        }
-                        break;
-                    }
-                }
-            }
-
-            $this->removeManagedWorkloads($server, $project, $profile);
-            $this->deleteSiteAndVerify($server, $siteId);
-
-            return true;
+            return $this->deleteSiteAndDatabases(
+                $project,
+                $profile,
+                (int) $this->getServerId($profile),
+                $siteId,
+            );
         } catch (\Throwable $e) {
             $this->lastError = 'Destroy error: '.$e->getMessage().' (Type: '.\get_class($e).')';
 
@@ -1977,6 +1957,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         try {
+            $this->removeManagedWorkloads($server, $project, $profile);
             $this->deleteSiteAndVerify($server, $siteId);
         } catch (\Throwable $exception) {
             $databaseErrors[] = "Failed to delete site {$siteId}: ".$exception->getMessage();
