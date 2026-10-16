@@ -41,13 +41,17 @@
     "prefer-stable": true,
     "archive": {
         "exclude": [
-            "/vendor",
-            "/tests",
-            "/.github",
-            "/.env*",
-            "/auth.json",
-            "/.phpunit*",
-            "/phpunit.xml*"
+            "vendor",
+            "node_modules",
+            "tests",
+            ".github",
+            ".env*",
+            "auth.json",
+            "builds",
+            "box.phar",
+            ".phpunit*",
+            "phpunit.xml*",
+            ".phpstan*"
         ]
     }
 }
