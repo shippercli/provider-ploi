@@ -19,7 +19,8 @@
   ],
   "config": {
     "provider": "ploi",
-    "api_key": "${PLOI_API_KEY}"
+    "api_key": "${PLOI_API_KEY}",
+    "server_id": 105556
   },
   "install": "composer require shippercli/provider-ploi"
 }
