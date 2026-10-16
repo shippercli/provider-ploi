@@ -1515,7 +1515,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         if ($this->client === null) {
             $apiKey = $this->config['api_key'] ?? '';
             \assert(\is_string($apiKey));
-            $this->client = new Ploi($apiKey);
+            $this->client = new PloiApiClient($apiKey);
         }
 
         return $this->client;

@@ -157,3 +157,23 @@ Create-server plans cannot inspect a server that does not yet exist; apply must
 resolve the server and recheck site ownership. Database/workload prerequisites
 and live connection readiness are also rechecked during apply. An unblocked
 plan does not certify those deferred checks.
+
+### Provider HTTP transport policy
+
+The provider uses a Ploi SDK subclass that keeps the SDK's resource and response
+interfaces. Each request disables redirects, bounds the HTTP attempt to 30 seconds,
+and rejects every non-2xx response before decoding successful data. Existing SDK
+HTTP exception classes are preserved for their documented status codes. Error
+messages retain the status without server-provided text, which can echo submitted
+credentials. Transport failures omit raw underlying diagnostics. Token rotation
+still updates the Authorization header on subsequent SDK resource calls.
+
+`python3 tests/http/test_responses.py` exercises the real Guzzle path with
+synthetic credentials and loopback HTTP. Sixty GET/POST rejection cases cover
+five redirects and ten error statuses with JSON/text bodies; two success controls
+check response decoding. The upstream SDK followed a 301 and exposed a synthetic
+credential echoed in a 401 response. The provider adapter blocks these cases.
+Unit tests cover actual SDK resource routing, token rotation, timeout/default
+option enforcement, typed errors, and safe transport diagnostics. CI runs the
+HTTP regression alongside the PHP matrix. Live Ploi compatibility, successful
+API data, and application log redaction are outside this check.

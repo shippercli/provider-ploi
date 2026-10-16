@@ -43,3 +43,6 @@ jobs:
 
       - name: Audit dependencies
         run: composer audit --locked --no-interaction
+
+      - name: Verify real HTTP transport policy
+        run: python3 tests/http/test_responses.py
