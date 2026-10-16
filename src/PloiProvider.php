@@ -204,6 +204,22 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $repoProvider = \is_string($repository['provider'] ?? null) ? $repository['provider'] : 'unknown';
         $repoName = \is_string($repository['name'] ?? null) ? $repository['name'] : 'unknown';
 
+        $blocked = null;
+        if ($serverId !== null) {
+            try {
+                foreach ($this->paginatedData($this->getClient()->server((int) $serverId)->sites()) as $candidate) {
+                    if (! \is_string($candidate->domain ?? null) || ! \is_int($candidate->id ?? null) || $candidate->id < 1) {
+                        throw new \RuntimeException('Ploi site inventory contains an invalid identity.');
+                    }
+                    if ($candidate->domain === $domain) {
+                        $this->assertSiteOwnership($project, $profile, (int) $serverId, $candidate->id);
+                    }
+                }
+            } catch (\Throwable) {
+                $blocked = 'Unable to verify matching Ploi site ownership. Check API access and review the project/profile marker before deployment.';
+            }
+        }
+
         $actions[] = 'Create or find site for domain: '.(\is_string($domain) ? $domain : '');
         $actions[] = "Install repository: {$repoProvider}:{$repoName} ({$branch})";
 
@@ -250,8 +266,9 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             'repository' => "{$repoProvider}:{$repoName}",
             'web_directory' => $this->projectWebDirectory($project),
             'project_root' => $this->projectRoot($project),
-            'actions' => $actions,
-            'note' => $note,
+            'blocked' => $blocked !== null,
+            'actions' => $blocked === null ? $actions : ['BLOCKED: '.$blocked],
+            'note' => $blocked === null ? $note : 'No deployment actions are authorized by this plan.',
         ];
     }
 

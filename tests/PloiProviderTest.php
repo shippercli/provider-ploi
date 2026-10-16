@@ -1270,7 +1270,7 @@ test('plan includes configured Ploi queue workers, cron jobs, and daemons', func
         public function cron(): array { return ['scheduler' => (object) ['enabled' => fn (): bool => true]]; }
         public function daemons(): array { return ['horizon' => (object) ['enabled' => fn (): bool => true]]; }
     };
-    $provider = new PloiProvider(['api_key' => 'token', 'server_id' => '123']);
+    $provider = emptyInventoryPlanProvider();
 
     $plan = $provider->plan($project, makePluginProfile());
 

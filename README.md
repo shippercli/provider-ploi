@@ -144,3 +144,16 @@ failure preserves the site so its connection details remain available.
 ## License
 
 MIT
+
+### Plan ownership inspection
+
+For an existing server, plan reads paginated site inventory and verifies the
+project/profile ownership marker on a matching domain. Unverifiable ownership,
+invalid site identities, malformed markers, and API read failures return
+`blocked: true` with a public blocked reason. Planning performs no writes.
+Core enforcement is proposed in shippercli/cli#154.
+
+Create-server plans cannot inspect a server that does not yet exist; apply must
+resolve the server and recheck site ownership. Database/workload prerequisites
+and live connection readiness are also rechecked during apply. An unblocked
+plan does not certify those deferred checks.
