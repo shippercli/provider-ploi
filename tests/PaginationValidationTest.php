@@ -87,3 +87,30 @@ test('valid complete Ploi pagination preserves every resource', function (): voi
     expect((new ReflectionMethod(PloiProvider::class, 'paginatedData'))->invoke(new PloiProvider, $resource))->toBe([$first, $second]);
     expect($resource->requested)->toBe([1, 2]);
 });
+
+test('contradictory or changing inventory pages discard all accumulated resources', function (string $case): void {
+    $first = (object) ['data' => [(object) ['id' => 1]], 'meta' => (object) ['last_page' => 2, 'current_page' => 1, 'total' => 2]];
+    $second = (object) ['data' => [(object) ['id' => 2]], 'meta' => (object) ['last_page' => 2, 'current_page' => 2, 'total' => 2]];
+    match ($case) {
+        'error' => $second->error = 'synthetic-secret',
+        'errors' => $second->errors = ['synthetic-secret'],
+        'success' => $second->success = false,
+        'last' => $first->meta->last_page = 3,
+        'total' => $second->meta->total = 3,
+        'total-missing' => $second->meta = (object) ['last_page' => 2, 'current_page' => 2],
+        'total-invalid' => $second->meta->total = 2.5,
+        'total-mismatch' => $first->meta->total = $second->meta->total = 3,
+        'current-null' => $second->meta->current_page = null,
+    };
+    expect(fn () => (new ReflectionMethod(PloiProvider::class, 'paginatedData'))
+        ->invoke(new PloiProvider, paginationResource([$first, $second])))
+        ->toThrow(RuntimeException::class, 'Ploi returned');
+})->with(['error', 'errors', 'success', 'last', 'total', 'total-missing', 'total-invalid', 'total-mismatch', 'current-null']);
+
+test('complete inventories accept canonical totals and empty controls', function (bool $empty): void {
+    $data = $empty ? [] : [(object) ['id' => 1]];
+    $page = (object) ['success' => true, 'error' => null, 'errors' => [], 'data' => $data,
+        'meta' => (object) ['last_page' => '1', 'current_page' => '1', 'total' => $empty ? '0' : '1']];
+    expect((new ReflectionMethod(PloiProvider::class, 'paginatedData'))
+        ->invoke(new PloiProvider, paginationResource([$page])))->toBe($data);
+})->with([true, false]);

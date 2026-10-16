@@ -242,3 +242,11 @@ present `success` flag other than boolean `true`, even when identities and
 pagination otherwise look valid. The diagnostic does not echo response error
 text. Rejection of a creation acknowledgement does not prove the server was
 never created: inspect the account before retrying to avoid duplicate servers.
+
+Other paginated resource inventories also reject explicit API errors and
+unsuccessful flags. The last-page value must stay stable across pages. When a
+`total` is supplied, it must be a nonnegative integer or canonical decimal
+string, remain present and unchanged, and match the final number of records.
+A present null current-page value is invalid. Missing optional total/current
+metadata remains supported. These checks reject inconsistent observations;
+they do not create a snapshot or prevent concurrent remote changes.

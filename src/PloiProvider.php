@@ -1820,6 +1820,9 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
         $items = [];
         $page = 1;
+        $expectedLast = null;
+        $hasTotal = null;
+        $expectedTotal = null;
         do {
             $response = $resource->page($page, 50);
             if (! \is_object($response) || ! \method_exists($response, 'getJson')) {
@@ -1827,6 +1830,12 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
 
             $json = $response->getJson();
+            if (! \is_object($json) || ($json->errors ?? []) !== []
+                || ! \in_array($json->error ?? null, [null, '', false], true)
+                || (\property_exists($json, 'success') && $json->success !== true)) {
+                throw new \RuntimeException('Ploi returned an invalid or contradictory inventory response');
+            }
+
             $data = $json->data ?? null;
             if (! \is_array($data) || ! \array_is_list($data)) {
                 throw new \RuntimeException('Ploi returned invalid paginated resource data');
@@ -1840,10 +1849,28 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $rawLastPage = $json->meta->last_page ?? null;
             $lastPage = (\is_int($rawLastPage) || \is_string($rawLastPage))
                 ? \filter_var($rawLastPage, FILTER_VALIDATE_INT, ['options' => ['min_range' => $page]]) : false;
-            if ($lastPage === false) {
+            if ($lastPage === false || ($expectedLast !== null && $lastPage !== $expectedLast)) {
                 throw new \RuntimeException('Ploi returned invalid pagination metadata');
             }
-            $currentPage = $json->meta->current_page ?? $page;
+            $expectedLast = $lastPage;
+            $meta = $json->meta ?? null;
+            if (! \is_object($meta)) {
+                throw new \RuntimeException('Ploi returned invalid pagination metadata');
+            }
+            $reportsTotal = \property_exists($meta, 'total');
+            if ($hasTotal !== null && $hasTotal !== $reportsTotal) {
+                throw new \RuntimeException('Ploi returned changing pagination total metadata');
+            }
+            $hasTotal = $reportsTotal;
+            if ($reportsTotal) {
+                $total = (\is_int($meta->total) || \is_string($meta->total))
+                    ? \filter_var($meta->total, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]) : false;
+                if ($total === false || ($expectedTotal !== null && $total !== $expectedTotal)) {
+                    throw new \RuntimeException('Ploi returned invalid or changing pagination total metadata');
+                }
+                $expectedTotal = $total;
+            }
+            $currentPage = \property_exists($meta, 'current_page') ? $meta->current_page : $page;
             if ((\is_int($currentPage) || \is_string($currentPage))
                 && \filter_var($currentPage, FILTER_VALIDATE_INT) === $page) {
                 $items = [...$items, ...$data];
@@ -1852,6 +1879,10 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
             $page++;
         } while ($page <= $lastPage);
+
+        if ($expectedTotal !== null && \count($items) !== $expectedTotal) {
+            throw new \RuntimeException('Ploi returned an inventory that does not match its reported total');
+        }
 
         return $items;
     }
