@@ -1492,13 +1492,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
     private function findSite(int $serverId, string $domain): ?object
     {
-        $sites = $this->getClient()->server($serverId)->sites()->get()->getJson()->data ?? null;
-        if (! \is_array($sites)) {
-            return null;
-        }
-
-        foreach ($sites as $site) {
-            if (\is_object($site) && \property_exists($site, 'domain') && $site->domain === $domain) {
+        foreach ($this->paginatedData($this->getClient()->server($serverId)->sites()) as $site) {
+            if (! \is_string($site->domain ?? null) || ! \is_int($site->id ?? null) || $site->id < 1) {
+                throw new \RuntimeException('Ploi site inventory contains an invalid identity.');
+            }
+            if ($site->domain === $domain) {
                 return $site;
             }
         }
