@@ -1825,8 +1825,12 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     {
         $response = $this->getClient()->server($serverId)->sites($siteId)->environment()->get();
         $content = $response->getJson()->data->content ?? null;
-        $marker = 'SHIPPERCLI_OWNERSHIP='.$this->siteOwnershipMarker($project, $profile);
-        if (! \is_string($content) || ! \in_array($marker, \preg_split('/\r?\n/', $content) ?: [], true)) {
+        try {
+            $values = \is_string($content) ? \Dotenv\Dotenv::parse($content) : [];
+        } catch (\Throwable) {
+            $values = [];
+        }
+        if (($values['SHIPPERCLI_OWNERSHIP'] ?? null) !== $this->siteOwnershipMarker($project, $profile)) {
             throw new \RuntimeException("Refusing to modify Ploi site {$siteId}: matching Shipper ownership evidence is missing");
         }
     }

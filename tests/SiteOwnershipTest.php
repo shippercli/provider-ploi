@@ -37,6 +37,10 @@ test('site cleanup requires ownership of the exact project and profile', functio
     ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'production'], JSON_THROW_ON_ERROR)), false],
     ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR)), true],
     ['SHIPPERCLI_OWNERSHIP='.hash('sha256', 'api|preview'), false],
+    ['SHIPPERCLI_OWNERSHIP='.hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR))."\nSHIPPERCLI_OWNERSHIP=other", false],
+    ["COMMENT=\"multiline\nSHIPPERCLI_OWNERSHIP=".hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR))."\ntext\"", false],
+    ['SHIPPERCLI_OWNERSHIP="unterminated', false],
+    ['export SHIPPERCLI_OWNERSHIP = "'.hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR)).'" # managed', true],
 ]);
 
 test('ownership markers distinguish scopes containing delimiters', function (): void {
