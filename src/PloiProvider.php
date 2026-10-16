@@ -90,6 +90,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 $errors[] = 'Ploi server ID must contain only digits';
             }
         } else {
+            if (($server['mode'] ?? null) === 'create' && \method_exists($project, 'phpVersion')
+                && \is_string($project->phpVersion()) && $project->phpVersion() !== ''
+                && \is_array($server['spec'] ?? null) && ! \array_key_exists('php_version', $server['spec'])) {
+                $server['spec']['php_version'] = $project->phpVersion();
+            }
             $errors = [...$errors, ...$this->validateServerLifecycle($server)];
         }
 
@@ -1597,6 +1602,24 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             if (! \is_string($plan) || $plan === '') {
                 $errors[] = 'Ploi create server mode requires infrastructure.server.spec.plan (or size)';
             }
+
+            $allowedOptions = [
+                'type' => ['server', 'load-balancer', 'database-server', 'redis-server'],
+                'database_type' => ['none', 'mysql', 'mysql84', 'mysql9', 'mariadb', 'mariadb114', 'postgresql', 'postgresql14', 'postgresql15', 'postgresql16', 'postgresql17', 'postgresql18'],
+                'webserver_type' => ['nginx', 'nginx-docker'],
+                'php_version' => ['none', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5'],
+                'os_type' => ['ubuntu-24-04-lts', 'ubuntu-26-04-lts', 'debian-12', 'debian-13'],
+                'ip_type' => ['ipv4', 'ipv6', 'ipv4-ipv6', 'ipv6-ipv4'],
+            ];
+            foreach ($allowedOptions as $field => $values) {
+                if (\array_key_exists($field, $spec)
+                    && (! \is_string($spec[$field]) || ! \in_array($spec[$field], $values, true))) {
+                    $errors[] = 'Ploi infrastructure.server.spec.'.$field.' must be one of: '.\implode(', ', $values);
+                }
+            }
+            if (\array_key_exists('install_monitoring', $spec) && ! \is_bool($spec['install_monitoring'])) {
+                $errors[] = 'Ploi infrastructure.server.spec.install_monitoring must be a boolean';
+            }
         }
 
         $cleanup = $server['cleanup'] ?? null;
@@ -1651,6 +1674,14 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     private function createServerFromLifecycle(object $project, object $profile, array $server): int
     {
         $spec = \is_array($server['spec'] ?? null) ? $server['spec'] : [];
+        if (! \array_key_exists('php_version', $spec) && \method_exists($project, 'phpVersion')
+            && \is_string($project->phpVersion()) && $project->phpVersion() !== '') {
+            $spec['php_version'] = $project->phpVersion();
+        }
+        $errors = $this->validateServerLifecycle([...$server, 'spec' => $spec]);
+        if ($errors !== []) {
+            throw new \RuntimeException(\implode('; ', $errors));
+        }
         $name = $this->managedServerName($project, $profile, $server);
         $credential = (int) ($spec['credential'] ?? ($spec['provider_id'] ?? ($spec['provider'] ?? 0)));
         $region = \is_string($spec['region'] ?? null) ? $spec['region'] : '';

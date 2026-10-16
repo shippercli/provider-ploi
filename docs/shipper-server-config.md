@@ -159,3 +159,28 @@ projects:
               plan: "vc2-1c-2gb"
               php_version: "8.3"
 ```
+
+
+## Creation option validation (2026-10-16)
+
+Server creation explicitly defaults to PHP `8.4` and database type `mysql84`,
+replacing the upstream SDK's implicit PHP `7.4` and unversioned MySQL defaults.
+If the project specifies `php_version` and the server spec omits it, the project
+version is used. An explicit server `php_version` wins, including `none` when PHP
+is not needed. Review the selected versions before creating new infrastructure;
+existing servers are not upgraded by this default change.
+
+Explicit server type, database type, PHP version, OS, webserver, and IP mode are
+checked against the values documented in the
+[Ploi create-server reference](https://developers.ploi.io/servers/create-server).
+Retired Ubuntu 22.04 and retired database selectors are rejected for new servers.
+`install_monitoring` must be a genuine YAML boolean. Invalid options are rejected
+in normal validation and again before the provider sends its create request.
+Bare engine aliases remain accepted where documented; their selected version can
+change upstream. Explicit values are not silently replaced.
+
+The regression checks the payload produced by the actual SDK with mocked HTTP,
+project-version inheritance, explicit overrides, and rejection before a create
+request. It does not establish live cloud availability, provider-specific
+OS/engine combinations, successful provisioning, or runtime health. Region,
+credential, and plan availability still depend on the account/provider.

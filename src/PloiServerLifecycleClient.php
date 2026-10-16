@@ -44,6 +44,8 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
 
     public function create(string $name, int $credential, string $region, string $plan, array $options = []): int
     {
+        // Override the SDK's legacy PHP 7.4 and unversioned MySQL defaults.
+        $options = array_merge(['php_version' => '8.4', 'database_type' => 'mysql84'], $options);
         $data = $this->client->server()->create($name, $credential, $region, $plan, $options)->getJson()->data ?? null;
         if (! \is_object($data) || ! \property_exists($data, 'id') || (int) $data->id <= 0) {
             throw new \RuntimeException('Failed to create Ploi server: invalid response from API');
