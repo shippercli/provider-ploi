@@ -115,23 +115,34 @@ $project = new class {
         public function user(): string { return 'fixture_user'; }
     }]; }
 };
-foreach (['valid', 'valid-site', 'wrong-name', 'bad-id', 'wrong-site', 'missing', 'false', 'error'] as $case) {
+foreach (['valid', 'valid-site', 'valid-explicit', 'wrong-name', 'bad-id', 'wrong-site', 'missing', 'false', 'error'] as $case) {
     $api = new PloiApiClient('synthetic-authorization-secret', new Client(['base_uri' => $argv[1].'/',
         'headers' => ['X-Fixture-Case' => $case]]));
     $provider = new \ShipperCli\ProviderPloi\PloiProvider;
+    $profile = new class($case) {
+        public function __construct(private string $case) {}
+        public function environment(): object { return new class($this->case) {
+            public function __construct(private string $case) {}
+            public function variables(): array { return $this->case === 'valid-explicit'
+                ? ['DB_PASSWORD' => 'literal-${PROJECT_NAME}-${PROFILE}-+%:@'] : []; }
+        }; }
+    };
     $failure = null;
     try {
-        (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $api->server(124), 55, $project, new stdClass);
+        (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $api->server(124), 55, $project, $profile);
     } catch (RuntimeException $exception) { $failure = $exception; }
     $environment = (new ReflectionProperty($provider, 'generatedEnvironment'))->getValue($provider);
-    if (in_array($case, ['valid', 'valid-site'], true)) {
+    if (in_array($case, ['valid', 'valid-site', 'valid-explicit'], true)) {
         if ($failure !== null || ($environment['DB_DATABASE'] ?? null) !== 'fixture'
             || ($environment['DB_USERNAME'] ?? null) !== 'fixture_user' || empty($environment['DB_PASSWORD'])) {
             throw new RuntimeException('Valid database creation rejected');
+        }
+        if ($case === 'valid-explicit' && $environment['DB_PASSWORD'] !== 'literal-${PROJECT_NAME}-${PROFILE}-+%:@') {
+            throw new RuntimeException('Explicit database password changed');
         }
     } elseif ($failure?->getMessage() !== 'Ploi did not confirm the requested database creation identity.'
         || $failure->getPrevious() !== null || $environment !== []) {
         throw new RuntimeException('Invalid database creation accepted or exposed');
     }
 }
-echo "Eight real HTTP database creation identity cases passed\n";
+echo "Nine real HTTP database creation identity cases passed\n";

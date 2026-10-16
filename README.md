@@ -116,7 +116,14 @@ database_environment_prefixes:
 The analytics connection uses `ANALYTICS_DB_HOST`, `ANALYTICS_DB_DATABASE`,
 `ANALYTICS_DB_USERNAME`, and `ANALYTICS_DB_PASSWORD`. Prefixes must be unique
 uppercase environment identifiers. Configure the application to read them.
-Passwords are generated independently. `database_host` defaults to `127.0.0.1`;
+For a new database, an explicitly configured application `<PREFIX>_PASSWORD`
+(for example `DB_PASSWORD` or `ANALYTICS_DB_PASSWORD`) is used unchanged for
+creation and application delivery. Profile values override project values.
+Explicit passwords must be nonempty strings; invalid values fail before any
+database provisioning. When absent, passwords are generated independently.
+Database names, users and hosts still come from the declarations/provider
+settings; this password option does not redirect the database connection.
+`database_host` defaults to `127.0.0.1`;
 override it for a different database endpoint. Re-apply preserves existing
 credentials without rotation; existing databases must already be linked to the
 site and their credentials available in the application environment.

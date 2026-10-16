@@ -137,3 +137,59 @@ test('resolved Ploi database name collisions stop before database API calls', fu
     expect($provider->destroy($project, $profile))->toBeFalse()
         ->and($provider->getLastError())->toContain('Resolved Ploi database names must be unique.');
 });
+
+test('explicit Ploi connection passwords reach creation and generated environment unchanged', function (): void {
+    $secret = 'literal-${PROJECT_NAME}-${PROFILE}-+%:@';
+    $profile = new class($secret) {
+        public function __construct(private string $secret) {}
+        public function name(): string { return 'production'; }
+        public function environment(): object { return new class($this->secret) {
+            public function __construct(private string $secret) {}
+            public function variables(): array { return ['DB_PASSWORD' => $this->secret]; }
+        }; }
+    };
+    $project = new class {
+        public function name(): string { return 'api'; }
+        public function databases(): array { return ploiDatabaseProject()->databases(); }
+        public function environment(): object { return new class {
+            public function variables(): array { return ['DB_PASSWORD' => 'project-default-secret']; }
+        }; }
+    };
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $page = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->twice()->andReturn($page);
+    $passwords = [];
+    $databases->shouldReceive('create')->twice()->andReturnUsing(function ($name, $user, $password) use (&$passwords): Response {
+        $passwords[$name] = $password;
+        $response = m::mock(Response::class);
+        $response->shouldReceive('getJson')->once()->andReturn((object) ['data' => (object) ['id' => count($passwords), 'name' => $name]]);
+        return $response;
+    });
+    $server->shouldReceive('databases')->times(4)->andReturn($databases);
+    $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    expect((new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, $project, $profile))->toBeTrue();
+    $environment = (new ReflectionProperty($provider, 'generatedEnvironment'))->getValue($provider);
+    expect($passwords['main'])->toBe($secret)->and($environment['DB_PASSWORD'])->toBe($secret)
+        ->and($passwords['analytics'])->not->toBe($secret)
+        ->and($environment['ANALYTICS_DB_PASSWORD'])->toBe($passwords['analytics']);
+});
+
+test('invalid explicit Ploi passwords stop before provisioning any database', function (mixed $password): void {
+    $profile = new class($password) {
+        public function __construct(private mixed $password) {}
+        public function environment(): object { return new class($this->password) {
+            public function __construct(private mixed $password) {}
+            public function variables(): array { return ['ANALYTICS_DB_PASSWORD' => $this->password]; }
+        }; }
+    };
+    $server = m::mock(Server::class);
+    $server->shouldNotReceive('databases');
+    $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    expect(fn () => (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), $profile))
+        ->toThrow(InvalidArgumentException::class, 'Explicit Ploi database passwords must be nonempty strings.');
+    expect($provider->validate(ploiDatabaseProject(), $profile))->toContain('Explicit Ploi database passwords must be nonempty strings.');
+    expect($provider->apply(ploiDatabaseProject(), $profile))->toBeFalse()
+        ->and($provider->getLastError())->toBe('Deployment error: Explicit Ploi database passwords must be nonempty strings. (Type: InvalidArgumentException)');
+})->with([[''], [null], [false], [123]]);

@@ -31,6 +31,8 @@ class ResponsesTest(unittest.TestCase):
                         request = json.loads(body)
                         if request.get('name') != 'fixture' or request.get('user') != 'fixture_user' or request.get('site_id') != 55 or not request.get('password'):
                             raise AssertionError('Unexpected database creation request')
+                        if case == 'valid-explicit' and request['password'] != 'literal-${PROJECT_NAME}-${PROFILE}-+%:@':
+                            raise AssertionError('Explicit database password changed in HTTP payload')
                         record = {'id': 9, 'name': 'fixture'}
                         if case == 'wrong-name': record['name'] = 'foreign'
                         if case == 'bad-id': record['id'] = '9junk'
@@ -123,7 +125,7 @@ class ResponsesTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 166)
+                self.assertEqual(len(received), 168)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:

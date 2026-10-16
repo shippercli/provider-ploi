@@ -71,6 +71,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         try {
             $this->databaseEnvironmentPrefixes($project);
             $this->assertUniqueResolvedDatabaseNames($project, $profile);
+            $this->configuredDatabasePasswords($project, $profile);
         } catch (\InvalidArgumentException|\RuntimeException $exception) {
             $errors[] = $exception->getMessage();
         }
@@ -187,6 +188,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     public function plan(object $project, object $profile): array
     {
         $this->assertUniqueResolvedDatabaseNames($project, $profile);
+        $this->configuredDatabasePasswords($project, $profile);
         $server = $this->extractServerLifecycle($profile);
         $serverId = $server !== null && ($server['mode'] ?? null) === 'create' ? null : $this->getServerId($profile);
         $actions = [];
@@ -288,6 +290,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
         try {
             $this->assertUniqueResolvedDatabaseNames($project, $profile);
+            $this->configuredDatabasePasswords($project, $profile);
             $serverId = $this->resolveServerIdForProfile($project, $profile, true);
             $serverLifecycle = $this->extractServerLifecycle($profile);
             if (($serverLifecycle['mode'] ?? null) === 'create') {
@@ -457,10 +460,29 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
     }
 
+    /** @return array<string, string> */
+    private function configuredDatabasePasswords(object $project, object $profile): array
+    {
+        $configured = $this->configuredEnvironment($project, $profile);
+        $passwords = [];
+        foreach ($this->databaseEnvironmentPrefixes($project) as $prefix) {
+            $key = $prefix.'_PASSWORD';
+            if (! \array_key_exists($key, $configured)) {
+                continue;
+            }
+            if (! \is_string($configured[$key]) || $configured[$key] === '') {
+                throw new \InvalidArgumentException('Explicit Ploi database passwords must be nonempty strings.');
+            }
+            $passwords[$key] = $configured[$key];
+        }
+        return $passwords;
+    }
+
     private function applyDatabases(object $server, int $siteId, object $project, object $profile): bool
     {
         $this->assertUniqueResolvedDatabaseNames($project, $profile);
         $prefixes = $this->databaseEnvironmentPrefixes($project);
+        $configuredPasswords = $this->configuredDatabasePasswords($project, $profile);
         foreach ($this->projectDatabases($project) as $database) {
             $dbName = $this->interpolateDatabaseName(
                 $this->databaseValue($database, 'name'),
@@ -507,7 +529,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
 
             if (! $exists) {
-                $password = $this->generateDatabasePassword();
+                $prefix = $prefixes[$this->databaseValue($database, 'name')];
+                $password = $configuredPasswords[$prefix.'_PASSWORD'] ?? $this->generateDatabasePassword();
                 try {
                     $created = $server->databases()->create($dbName, $dbUser, $password, null, $siteId)->getJson();
                 } catch (\Throwable) {
