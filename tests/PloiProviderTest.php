@@ -415,9 +415,16 @@ test('provider package deletes managed created server on destroy cleanup', funct
     $serverResource->shouldReceive('databases')->withNoArgs()->once()->andReturn($databaseCollection);
     $serverResource->shouldReceive('sites')->with(55)->once()->andReturn($siteResource);
     $serverResource->shouldReceive('delete')->once()->andReturn($deleteResponse);
+    $beforeDelete = m::mock(Response::class);
+    $beforeDelete->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['id' => 999, 'status' => 'active']]);
+    $reads = 0;
+    $serverResource->shouldReceive('get')->twice()->andReturnUsing(function () use (&$reads, $beforeDelete) {
+        if ($reads++ === 0) return $beforeDelete;
+        throw new \Ploi\Exceptions\Http\NotFound;
+    });
 
     $client->shouldReceive('server')->withNoArgs()->twice()->andReturn($listResource);
-    $client->shouldReceive('server')->with(999)->times(3)->andReturn($serverResource);
+    $client->shouldReceive('server')->with(999)->times(5)->andReturn($serverResource);
 
     $provider = new class($client) extends PloiProvider
     {

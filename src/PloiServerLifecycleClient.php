@@ -8,7 +8,13 @@ use Ploi\Ploi;
 
 final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
 {
-    public function __construct(private readonly Ploi $client) {}
+    private readonly \Closure $pause;
+
+    public function __construct(private readonly Ploi $client, private readonly int $deleteWaitSeconds = 30, ?callable $pause = null)
+    {
+        if ($deleteWaitSeconds < 0) throw new \InvalidArgumentException('Ploi deletion verification window must be nonnegative.');
+        $this->pause = $pause === null ? static fn () => \sleep(1) : \Closure::fromCallable($pause);
+    }
 
     public function list(): array
     {
@@ -66,8 +72,11 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
 
     public function get(int $serverId): object
     {
-        $data = $this->client->server($serverId)->get()->getJson()->data ?? null;
-        if (! \is_object($data) || $this->serverId($data->id ?? null) !== $serverId) {
+        $json = $this->client->server($serverId)->get()->getJson();
+        $data = $json->data ?? null;
+        if (! \is_object($json) || ! \is_object($data) || $this->serverId($data->id ?? null) !== $serverId
+            || ($json->errors ?? []) !== [] || ! \in_array($json->error ?? null, [null, '', false], true)
+            || (\property_exists($json, 'success') && $json->success !== true)) {
             throw new \RuntimeException("Ploi server {$serverId} was not found or returned an invalid response");
         }
 
@@ -88,6 +97,15 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
 
     public function delete(int $serverId): void
     {
+        try {
+            $existing = $this->get($serverId);
+        } catch (\Ploi\Exceptions\Http\NotFound) {
+            return;
+        }
+        if (($existing->status ?? null) === 'destroying') {
+            $this->waitForServerAbsence($serverId);
+            return;
+        }
         $json = $this->client->server($serverId)->delete()->getJson();
         $data = $json->data ?? null;
         $message = $json->message ?? null;
@@ -101,6 +119,23 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
             || (\property_exists($json, 'success') && $json->success !== true)) {
             throw new \RuntimeException('Ploi server deletion acknowledgement is invalid or contradictory.');
         }
+        $this->waitForServerAbsence($serverId);
+    }
+
+    private function waitForServerAbsence(int $serverId): void
+    {
+        $deadline = \microtime(true) + $this->deleteWaitSeconds;
+        do {
+            try {
+                $this->get($serverId);
+            } catch (\Ploi\Exceptions\Http\NotFound) {
+                return;
+            }
+            if (\microtime(true) >= $deadline) {
+                throw new \RuntimeException('Ploi server deletion remains unconfirmed; the server is still visible. Recheck status before retrying.');
+            }
+            ($this->pause)();
+        } while (true);
     }
 
     private function serverId(mixed $value): ?int

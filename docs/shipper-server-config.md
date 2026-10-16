@@ -217,9 +217,22 @@ malformed IDs, and an unchanged active state are refused. Diagnostics omit the
 server's free-form message. See the
 [documented delete response](https://developers.ploi.io/servers/delete-server).
 
-This is acknowledgement of an asynchronous operation, not proof of completed
-removal. Completion must still be verified by subsequent account inventory and
-runtime checks. The client does not replay DELETE after an unreadable response;
-the request may already have acted. The broader lifecycle audit remains open
-until completion and concurrent-operation behavior are verified against a real
-account.
+This acknowledges an asynchronous operation. The lifecycle client now reads the
+server before deletion, sends at most one DELETE, validates the acknowledgement,
+and waits for a subsequent HTTP 404 on that server endpoint before returning
+success. A server already reported as `destroying` is polled without resending
+DELETE. An initial 404 is idempotent API absence. Permission/server errors,
+contradictory metadata, and foreign identities are not treated as absence.
+
+The default verification window is 30 seconds with one-second polling. A request
+already in flight can finish after that window; the transport's per-attempt
+30-second timeout also applies. If the server remains visible, cleanup fails with
+an unconfirmed-deletion diagnostic. Retrying a still-destroying server rechecks
+its status instead of sending another DELETE. An unreadable acknowledgement is
+not retried automatically, since the request may already have acted.
+
+A 404 verifies control-plane absence as observed by this account, not physical
+cloud termination or the absence of all related resources. Live completion,
+shared lifecycle locking, and concurrent account changes remain unverified. Mock
+and real local HTTP tests cover the sequence and refusal cases; no real server
+was deleted during the audit.

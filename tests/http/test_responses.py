@@ -11,6 +11,8 @@ class ResponsesTest(unittest.TestCase):
     def test_status_and_diagnostics(self):
         received = []
         redirected = []
+        deletion_methods = []
+        pending = [False]
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_args):
@@ -20,7 +22,16 @@ class ResponsesTest(unittest.TestCase):
                 body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 received.append((self.path, self.headers.get('Authorization'), body))
                 procedure = self.path.rsplit('/', 1)[-1]
-                if procedure.startswith('status-'):
+                if self.path == '/servers/7':
+                    deletion_methods.append(self.command)
+                    if self.command == 'DELETE':
+                        pending[0] = True
+                        status, payload = 200, b'{"data":{"id":7,"status":"destroying"}}'
+                    elif pending[0]:
+                        status, payload = 404, b'{}'
+                    else:
+                        status, payload = 200, b'{"data":{"id":7,"status":"active"}}'
+                elif procedure.startswith('status-'):
                     _, status, format_ = procedure.split('-')
                     status = int(status)
                     echoed = self.headers.get('Authorization', '') + body.decode() + 'synthetic-error-secret'
@@ -39,6 +50,7 @@ class ResponsesTest(unittest.TestCase):
                 self.wfile.write(payload)
 
             do_GET = do_POST
+            do_DELETE = do_POST
 
         with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -47,7 +59,8 @@ class ResponsesTest(unittest.TestCase):
                 result = subprocess.run(['php', str(Path(__file__).with_name('verify-responses.php')), f'http://127.0.0.1:{server.server_port}'], capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(redirected, [])
-                self.assertEqual(len(received), 62)
+                self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
+                self.assertEqual(len(received), 65)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:

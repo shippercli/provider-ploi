@@ -32,3 +32,6 @@ foreach (['direct', 'nested'] as $format) {
     if ($data !== $expected) throw new RuntimeException('Successful response decoding changed');
 }
 echo "60 HTTP rejection checks and two success controls passed\n";
+
+(new \ShipperCli\ProviderPloi\PloiServerLifecycleClient($client, 0))->delete(7);
+echo "Real HTTP deletion completed only after matching acknowledgement and subsequent 404\n";
