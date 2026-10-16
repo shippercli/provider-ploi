@@ -88,14 +88,21 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
 
     public function delete(int $serverId): void
     {
-        $message = $this->client->server($serverId)->delete()->getJson()->message ?? null;
-        if (\is_string($message)) {
-            $message = \strtolower($message);
-            if (\str_contains($message, 'error') || \str_contains($message, 'failed')) {
-                throw new \RuntimeException("Failed to delete Ploi server {$serverId}: {$message}");
-            }
+        $json = $this->client->server($serverId)->delete()->getJson();
+        $data = $json->data ?? null;
+        $message = $json->message ?? null;
+        $failureMessage = $message !== null && (! \is_string($message)
+            || \str_contains(\strtolower($message), 'error') || \str_contains(\strtolower($message), 'failed'));
+        if ($failureMessage || ! \is_object($json) || ! \is_object($data)
+            || $this->serverId($data->id ?? null) !== $serverId
+            || ($data->status ?? null) !== 'destroying'
+            || ($json->errors ?? []) !== []
+            || ! \in_array($json->error ?? null, [null, '', false], true)
+            || (\property_exists($json, 'success') && $json->success !== true)) {
+            throw new \RuntimeException('Ploi server deletion acknowledgement is invalid or contradictory.');
         }
     }
+
     private function serverId(mixed $value): ?int
     {
         $id = (\is_int($value) || \is_string($value))

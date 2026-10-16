@@ -404,7 +404,7 @@ test('provider package deletes managed created server on destroy cleanup', funct
     ]);
     $siteDeleteResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Site deleted']);
     $deleteResponse->shouldReceive('getJson')->andReturn((object) [
-        'message' => 'Server deleted successfully',
+        'data' => (object) ['id' => 999, 'status' => 'destroying'],
     ]);
 
     $listResource->shouldReceive('page')->with(1, 50)->twice()->andReturn($listResponse);

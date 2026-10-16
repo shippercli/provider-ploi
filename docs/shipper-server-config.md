@@ -206,3 +206,20 @@ transactional snapshot, independent ownership proof from names alone, or a lock
 against concurrent account changes. A create request can already have provisioned
 a server when an invalid acknowledgement is rejected; no automatic deletion is
 attempted in that situation.
+
+
+## Server deletion acknowledgement
+
+The lifecycle client accepts deletion only when the response contains the exact
+requested positive server ID and status `destroying`, with no contradictory
+error/failure fields. Missing payloads, message-only acknowledgements, foreign or
+malformed IDs, and an unchanged active state are refused. Diagnostics omit the
+server's free-form message. See the
+[documented delete response](https://developers.ploi.io/servers/delete-server).
+
+This is acknowledgement of an asynchronous operation, not proof of completed
+removal. Completion must still be verified by subsequent account inventory and
+runtime checks. The client does not replay DELETE after an unreadable response;
+the request may already have acted. The broader lifecycle audit remains open
+until completion and concurrent-operation behavior are verified against a real
+account.
