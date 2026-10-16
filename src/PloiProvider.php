@@ -1659,13 +1659,26 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             return null;
         }
 
+        $match = null;
+        $seenIds = [];
         foreach ($this->getServerLifecycleClient()->list() as $server) {
-            if (\is_object($server) && \property_exists($server, 'name') && \property_exists($server, 'id') && $server->name === $name) {
-                return (int) $server->id;
+            $rawId = \is_object($server) ? ($server->id ?? null) : null;
+            $id = (\is_int($rawId) || \is_string($rawId))
+                ? \filter_var($rawId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) : false;
+            $serverName = \is_object($server) ? ($server->name ?? null) : null;
+            if ($id === false || isset($seenIds[$id]) || ! \is_string($serverName)
+                || $serverName === '' || \trim($serverName) !== $serverName) {
+                throw new \RuntimeException('Ploi server discovery received an invalid or duplicate identity');
+            }
+            $seenIds[$id] = true;
+            if ($serverName === $name) {
+                if ($match !== null) {
+                    throw new \RuntimeException('Ploi server discovery found multiple servers with the managed name');
+                }
+                $match = $id;
             }
         }
-
-        return null;
+        return $match;
     }
 
     /**

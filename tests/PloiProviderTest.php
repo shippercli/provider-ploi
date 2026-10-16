@@ -457,6 +457,7 @@ test('provider package refuses deleting unmanaged created server', function (): 
         'data' => [
             (object) ['id' => 777, 'name' => 'api-pr-777'],
         ],
+        'meta' => (object) ['last_page' => 1],
     ]);
 
     $listResponse->shouldReceive('getJson')->andReturn((object) [

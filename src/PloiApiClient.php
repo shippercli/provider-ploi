@@ -58,6 +58,16 @@ final class PloiApiClient extends Ploi
             };
             throw new $exception('Ploi API request failed (HTTP '.$status.').');
         }
-        return new Response($response);
+        $result = new Response($response);
+        if ($method === 'post' && $url === 'servers') {
+            // The SDK sets a weakly typed integer resource ID before returning.
+            $rawId = $result->getJson()->data->id ?? null;
+            $id = (is_int($rawId) || is_string($rawId))
+                ? filter_var($rawId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) : false;
+            if ($id === false) {
+                throw new RuntimeException('Ploi server creation returned an invalid response identity.');
+            }
+        }
+        return $result;
     }
 }

@@ -13,29 +13,61 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
     public function list(): array
     {
         $servers = [];
+        $seenIds = [];
         $page = 1;
-
+        $lastPage = null;
+        $hasTotal = null;
+        $expectedTotal = null;
         do {
             $json = $this->client->server()->page($page, 50)->getJson();
             $data = $json->data ?? null;
-            if (! \is_array($data)) {
-                throw new \RuntimeException('Ploi returned an invalid server list response');
+            $meta = $json->meta ?? null;
+            if (! \is_array($data) || ! \array_is_list($data) || ! \is_object($meta)) {
+                throw new \RuntimeException('Ploi server inventory has an invalid list envelope');
             }
-
-            $servers = [...$servers, ...\array_values(\array_filter($data, \is_object(...)))];
-            $lastPage = isset($json->meta->last_page) && \is_numeric($json->meta->last_page)
-                ? (int) $json->meta->last_page
-                : $page;
+            $reportedLast = $this->serverId($meta->last_page ?? null);
+            $current = \property_exists($meta, 'current_page') ? $this->serverId($meta->current_page) : $page;
+            if ($reportedLast === null || $reportedLast < $page || $current !== $page
+                || ($lastPage !== null && $reportedLast !== $lastPage)) {
+                throw new \RuntimeException('Ploi server inventory has invalid or changing pagination metadata');
+            }
+            $reportsTotal = \property_exists($meta, 'total');
+            if ($hasTotal !== null && $reportsTotal !== $hasTotal) {
+                throw new \RuntimeException('Ploi server inventory has changing total metadata');
+            }
+            $hasTotal = $reportsTotal;
+            if ($reportsTotal) {
+                $total = (\is_int($meta->total) || \is_string($meta->total))
+                    ? \filter_var($meta->total, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]) : false;
+                if ($total === false || ($expectedTotal !== null && $total !== $expectedTotal)) {
+                    throw new \RuntimeException('Ploi server inventory has invalid or changing total metadata');
+                }
+                $expectedTotal = $total;
+            }
+            $lastPage = $reportedLast;
+            foreach ($data as $server) {
+                $id = \is_object($server) ? $this->serverId($server->id ?? null) : null;
+                $name = \is_object($server) ? ($server->name ?? null) : null;
+                if ($id === null || isset($seenIds[$id]) || ! \is_string($name)
+                    || $name === '' || \trim($name) !== $name) {
+                    throw new \RuntimeException('Ploi server inventory contains an invalid or duplicate identity');
+                }
+                $seenIds[$id] = true;
+                $servers[] = $server;
+            }
             $page++;
         } while ($page <= $lastPage);
 
+        if ($expectedTotal !== null && \count($servers) !== $expectedTotal) {
+            throw new \RuntimeException('Ploi server inventory does not match its reported total');
+        }
         return $servers;
     }
 
     public function get(int $serverId): object
     {
         $data = $this->client->server($serverId)->get()->getJson()->data ?? null;
-        if (! \is_object($data) || ! \property_exists($data, 'id') || (int) $data->id !== $serverId) {
+        if (! \is_object($data) || $this->serverId($data->id ?? null) !== $serverId) {
             throw new \RuntimeException("Ploi server {$serverId} was not found or returned an invalid response");
         }
 
@@ -47,7 +79,7 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
         // Override the SDK's legacy PHP 7.4 and unversioned MySQL defaults.
         $options = array_merge(['php_version' => '8.4', 'database_type' => 'mysql84'], $options);
         $data = $this->client->server()->create($name, $credential, $region, $plan, $options)->getJson()->data ?? null;
-        if (! \is_object($data) || ! \property_exists($data, 'id') || (int) $data->id <= 0) {
+        if (! \is_object($data) || $this->serverId($data->id ?? null) === null) {
             throw new \RuntimeException('Failed to create Ploi server: invalid response from API');
         }
 
@@ -64,4 +96,11 @@ final class PloiServerLifecycleClient implements ServerLifecycleClientInterface
             }
         }
     }
+    private function serverId(mixed $value): ?int
+    {
+        $id = (\is_int($value) || \is_string($value))
+            ? \filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) : false;
+        return $id === false ? null : $id;
+    }
+
 }

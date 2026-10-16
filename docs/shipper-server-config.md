@@ -184,3 +184,25 @@ project-version inheritance, explicit overrides, and rejection before a create
 request. It does not establish live cloud availability, provider-specific
 OS/engine combinations, successful provisioning, or runtime health. Region,
 credential, and plan availability still depend on the account/provider.
+
+## Server discovery inventory
+
+Server discovery requires a list of objects with positive integer IDs and
+nonempty, unambiguous names. Scalar rows are not silently discarded. IDs must be
+unique across all pages; string integer IDs remain supported. Pagination requires
+an integral terminal page, and a supplied current page must match the request.
+Terminal-page and optional total metadata must remain consistent while walking
+pages. A supplied total must match the accumulated inventory. Later-page errors
+discard the partial result. These checks follow the documented
+[list-server response](https://developers.ploi.io/servers/list-servers) shape.
+
+Name resolution scans the complete validated result and refuses multiple servers
+with the managed name. Single-server and creation response IDs are not coerced
+from booleans, fractions, malformed numeric strings, or overflow values. Creation
+IDs are checked before the SDK's weak integer setter can truncate them.
+
+This guards readable identity/discovery decisions. It does not establish a
+transactional snapshot, independent ownership proof from names alone, or a lock
+against concurrent account changes. A create request can already have provisioned
+a server when an invalid acknowledgement is rejected; no automatic deletion is
+attempted in that situation.
