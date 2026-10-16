@@ -101,6 +101,186 @@ projects:
 
 Created servers are marked as Shipper-managed using a deterministic managed name based on project, profile, and configured server name. Cleanup only deletes servers that match that managed identity.
 
+## Database connection environments
+
+A single new database exports `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, and
+`DB_PASSWORD`. Multiple databases require `database_environment_prefixes` in the
+provider configuration, keyed by each declared database name, for example:
+
+```yaml
+database_environment_prefixes:
+  main: DB
+  analytics: ANALYTICS_DB
+```
+
+The analytics connection uses `ANALYTICS_DB_HOST`, `ANALYTICS_DB_DATABASE`,
+`ANALYTICS_DB_USERNAME`, and `ANALYTICS_DB_PASSWORD`. Prefixes must be unique
+uppercase environment identifiers. Configure the application to read them.
+For a new database, an explicitly configured application `<PREFIX>_PASSWORD`
+(for example `DB_PASSWORD` or `ANALYTICS_DB_PASSWORD`) is used unchanged for
+creation and application delivery. Profile values override project values.
+Explicit passwords must be nonempty strings; invalid values fail before any
+database provisioning. When absent, passwords are generated independently.
+Database names, users and hosts still come from the declarations/provider
+settings; this password option does not redirect the database connection.
+`database_host` defaults to `127.0.0.1`;
+override it for a different database endpoint. Re-apply preserves existing
+credentials without rotation; existing databases must already be linked to the
+site and their credentials available in the application environment. New
+databases are recorded as Shipper-created in the site's environment. An
+existing database without matching lifecycle evidence is refused unless its
+exact resolved identity is listed for adoption in the profile:
+
+```yaml
+ploi:
+  adopt_existing_databases:
+    - project: api
+      profile: production
+      name: api_production
+```
+
+The resolved database name, project, and profile must all match. The read-only
+plan calls out each adoption. Adoption is then persisted as a site environment
+marker and destroy preserves adopted databases. Destroy only deletes databases
+marked as created for that exact project/profile/name. Older installs without
+database lifecycle markers fail closed during destroy; review the database
+before recording the appropriate marker through Ploi.
+
+## Site ownership
+
+New deployments persist `SHIPPERCLI_OWNERSHIP` in the site's environment. Its
+value is the SHA-256 hash of the JSON-encoded `[project-name, profile-name]` array
+(PHP `json_encode` with `JSON_THROW_ON_ERROR`). Encoding the pair preserves its
+boundaries even when names contain delimiters. Re-apply,
+destroy, and preview cleanup require this persisted marker before modifying an
+existing site. Matching a domain alone does not establish ownership.
+
+Existing installations created before this marker was introduced fail closed.
+Review the site's identity, project/profile scope, and all attached databases
+before explicitly recording the marker in its environment through Ploi. Shipper
+does not automatically adopt unmarked sites. Preserve the marker in any custom
+environment-management automation. If deployment fails before the marker is
+persisted, inspect the partially created site before retrying or removing it.
+
+Database cleanup also requires Ploi's returned `site.id` to match the deployment
+site. Missing or different associations block deletion. A database deletion
+failure preserves the site so its connection details remain available.
+
 ## License
 
 MIT
+
+### Plan ownership inspection
+
+For an existing server, plan reads paginated site inventory and verifies the
+project/profile ownership marker on a matching domain. Unverifiable ownership,
+invalid site identities, malformed markers, and API read failures return
+`blocked: true` with a public blocked reason. Planning performs no writes.
+Core enforcement is proposed in shippercli/cli#154.
+
+Create-server plans cannot inspect a server that does not yet exist; apply must
+resolve the server and recheck site ownership. Database/workload prerequisites
+and live connection readiness are also rechecked during apply. An unblocked
+plan does not certify those deferred checks.
+
+### Provider HTTP transport policy
+
+The provider uses a Ploi SDK subclass that keeps the SDK's resource and response
+interfaces. Each request disables redirects, bounds the HTTP attempt to 30 seconds,
+and rejects every non-2xx response before decoding successful data. Existing SDK
+HTTP exception classes are preserved for their documented status codes. Error
+messages retain the status without server-provided text, which can echo submitted
+credentials. Transport failures omit raw underlying diagnostics. Token rotation
+still updates the Authorization header on subsequent SDK resource calls.
+
+`python3 tests/http/test_responses.py` exercises the real Guzzle path with
+synthetic credentials and loopback HTTP. Sixty GET/POST rejection cases cover
+five redirects and ten error statuses with JSON/text bodies; two success controls
+check response decoding. The upstream SDK followed a 301 and exposed a synthetic
+credential echoed in a 401 response. The provider adapter blocks these cases.
+Unit tests cover actual SDK resource routing, token rotation, timeout/default
+option enforcement, typed errors, and safe transport diagnostics. CI runs the
+HTTP regression alongside the PHP matrix. Live Ploi compatibility, successful
+API data, and application log redaction are outside this check.
+
+
+### Distribution archive checks
+
+Composer archive exclusions and Git export attributes omit installed dependencies,
+tests, workflow files, root environment/auth configuration, and PHPUnit caches and
+configuration. Runtime source, package metadata, documentation, and assets remain
+available. `python3 tests/package/verify-dist.py` checks Composer and Git exports,
+then loads all declared runtime classes from an extracted ZIP with an overridden
+class map. Dependency classes come from the installed checkout; this check does
+not perform a fresh production dependency install or live deployment. CI runs it
+with the existing provider tests. Git export verification uses current worktree
+attributes; committed attributes determine subsequent GitHub source archives.
+
+### Complete environment input
+
+Existing application environments must parse completely before their database
+credentials are trusted. An unfinished double-quoted value at the end of the
+file is rejected even if valid credentials appear earlier; phpdotenv otherwise
+silently drops that unfinished value. Complete multiline passwords remain
+supported. The internal completeness probe is removed from parsed values.
+The same completeness check applies before trusting the site ownership marker.
+
+### Database declaration types and engine verification
+
+Database declarations accept `mysql`, `mariadb`, and PostgreSQL aliases
+`postgres`, `postgresql`, `pgsql`. Other types fail local validation before API
+access; the SQL database operation cannot provision Redis, SQLite or MongoDB.
+These accepted labels do not select or change the server's installed engine.
+
+The published create-database operation accepts name, user, password, description
+and site_id, with no per-database engine selector. Its response reports a type.
+The documented get-server response shows mysql_version but no general engine
+identifier. Reliable verification that a declaration matches an existing server
+remains open pending a documented metadata contract or an authorized live-account
+check. This provider must not be treated as having verified cross-engine
+provisioning merely because request fixtures or local type validation pass.
+
+References checked 2026-10-16:
+- <https://developers.ploi.io/databases/create-database>
+- <https://developers.ploi.io/servers/get-server>
+
+### Partial database provisioning
+
+After each confirmed database creation, the provider merges its connection variables into the site environment and reads them back before creating another database. Existing unrelated environment values are retained. A later creation failure therefore leaves earlier confirmed connection settings available for retry. An unreadable or malformed environment, failed write, or mismatching readback stops further provisioning with a fixed diagnostic.
+
+This is not an atomic multi-database operation. A database can still be created before its credentials are successfully stored, and an ambiguous creation response can leave an unconfirmed resource. There is no durable credential journal or automatic rollback; resolve these failures before retrying.
+
+### Deployment status evidence
+
+Deployment polling validates the requested site ID, supplied server ID, response
+error fields and status shape before accepting the documented `active` state.
+Documented transitional states remain pending; `deploy-failed` reports failure.
+A supplied `deploying` field must be boolean. Missing, unrelated or unknown state
+cannot be treated as success. See the [Ploi status reference](https://developers.ploi.io/getting-started/resource-statuses).
+
+An active site is a status observation, not a unique receipt for the deployment
+that was just triggered. Correlating completion with a specific deployment and
+provider queue/persistence timing still needs live-account verification. A local
+timeout does not stop a remote deployment.
+
+The deployment poll uses a monotonic deadline and does not start another poll
+after expiry. Sleep is capped to remaining time, and a response arriving after
+the deadline cannot report success. An in-flight SDK request can still take its
+configured transport timeout to return; the local deployment deadline does not
+cancel that request or the remote operation.
+
+The deployment trigger must return the documented `Deployment has been started`
+acknowledgment without explicit errors before polling begins. Missing or failed
+acknowledgments stop the local flow. This response only acknowledges a start;
+it does not prove completion, and an ambiguous response does not prove that the
+remote deployment failed to start. Inspect remote state before retrying.
+
+### Status output privacy
+
+Status includes only provider/server identifiers and a site summary containing
+`id`, `domain` and observed `status`. It no longer returns the raw Ploi site
+resource, which may contain deployment scripts, environment or repository details.
+Consumers depending on arbitrary nested site fields must use the documented
+summary instead. A site's existence is not proof of deployment: absent sites are
+`not_found`, while missing/malformed status is `unknown`. An observed state does
+not uniquely identify completion of the deployment just triggered.

@@ -33,6 +33,8 @@ test('provider declares capability states explicitly', function (): void {
 
     expect($capabilities['app_deploy']['state'])->toBe('supported')
         ->and($capabilities['server_lifecycle']['state'])->toBe('partial')
+        ->and($capabilities['previews']['limitations'][0])->toContain('orphan-cleanup flow')
+        ->and($capabilities['previews']['limitations'][0])->toContain('${GITHUB_PR_NUMBER}')
         ->and($capabilities['background_workloads']['state'])->toBe('supported')
         ->and($capabilities['rollback']['state'])->toBe('unsupported');
 });
@@ -394,30 +396,36 @@ test('provider package deletes managed created server on destroy cleanup', funct
         ],
         'meta' => (object) ['last_page' => 1],
     ]);
-    $siteListResponse->shouldReceive('getJson')->andReturn((object) [
-        'data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']],
-        'meta' => (object) ['last_page' => 1],
-    ]);
+    $present = (object) ['data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']], 'meta' => (object) ['last_page' => 1]];
+    $siteListResponse->shouldReceive('getJson')->andReturn($present, $present,
+        (object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
     $databaseListResponse->shouldReceive('getJson')->andReturn((object) [
         'data' => [],
         'meta' => (object) ['last_page' => 1],
     ]);
     $siteDeleteResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Site deleted']);
     $deleteResponse->shouldReceive('getJson')->andReturn((object) [
-        'message' => 'Server deleted successfully',
+        'data' => (object) ['id' => 999, 'status' => 'destroying'],
     ]);
 
     $listResource->shouldReceive('page')->with(1, 50)->twice()->andReturn($listResponse);
-    $siteCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($siteListResponse);
+    $siteCollection->shouldReceive('page')->with(1, 50)->times(3)->andReturn($siteListResponse);
     $databaseCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($databaseListResponse);
     $siteResource->shouldReceive('delete')->once()->andReturn($siteDeleteResponse);
-    $serverResource->shouldReceive('sites')->withNoArgs()->once()->andReturn($siteCollection);
+    $serverResource->shouldReceive('sites')->withNoArgs()->times(3)->andReturn($siteCollection);
     $serverResource->shouldReceive('databases')->withNoArgs()->once()->andReturn($databaseCollection);
     $serverResource->shouldReceive('sites')->with(55)->once()->andReturn($siteResource);
     $serverResource->shouldReceive('delete')->once()->andReturn($deleteResponse);
+    $beforeDelete = m::mock(Response::class);
+    $beforeDelete->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['id' => 999, 'status' => 'active']]);
+    $reads = 0;
+    $serverResource->shouldReceive('get')->twice()->andReturnUsing(function () use (&$reads, $beforeDelete) {
+        if ($reads++ === 0) return $beforeDelete;
+        throw new \Ploi\Exceptions\Http\NotFound;
+    });
 
     $client->shouldReceive('server')->withNoArgs()->twice()->andReturn($listResource);
-    $client->shouldReceive('server')->with(999)->times(3)->andReturn($serverResource);
+    $client->shouldReceive('server')->with(999)->times(5)->andReturn($serverResource);
 
     $provider = new class($client) extends PloiProvider
     {
@@ -425,6 +433,9 @@ test('provider package deletes managed created server on destroy cleanup', funct
         {
             parent::__construct(['api_key' => 'token']);
         }
+
+        // Ownership behavior is exercised separately; this fixture isolates its named operation.
+        protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void {}
 
         protected function getClient(): Ploi
         {
@@ -454,6 +465,7 @@ test('provider package refuses deleting unmanaged created server', function (): 
         'data' => [
             (object) ['id' => 777, 'name' => 'api-pr-777'],
         ],
+        'meta' => (object) ['last_page' => 1],
     ]);
 
     $listResponse->shouldReceive('getJson')->andReturn((object) [
@@ -835,6 +847,9 @@ test('provider package lists sites across every page', function (): void {
             parent::__construct(['api_key' => 'token', 'server_id' => '123'], $lifecycleClient);
         }
 
+        // Ownership behavior is exercised separately; this fixture isolates its named operation.
+        protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void {}
+
         protected function getClient(): Ploi
         {
             return $this->fakeClient;
@@ -846,7 +861,7 @@ test('provider package lists sites across every page', function (): void {
     ]);
 });
 
-test('database deletion failure is reported after site deletion is attempted', function (): void {
+test('unsafe database cleanup preserves the site', function (bool $associated): void {
     $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
     $lifecycleClient->shouldReceive('get')->with(123)->once()->andReturn((object) ['id' => 123]);
     $client = m::mock(Ploi::class);
@@ -854,6 +869,11 @@ test('database deletion failure is reported after site deletion is attempted', f
     $databases = m::mock(Database::class);
     $database = m::mock(Database::class);
     $site = m::mock(Site::class);
+    $environment = m::mock(Environment::class);
+    $site->shouldReceive('environment')->andReturn($environment);
+    $marker = hash('sha256', json_encode(['api', 'preview', 'api_preview'], JSON_THROW_ON_ERROR));
+    $key = 'SHIPPERCLI_DATABASE_'.strtoupper(substr(hash('sha256', 'api_preview'), 0, 24));
+    $environment->shouldReceive('get->getJson')->andReturn((object) ['data' => (object) ['content' => "{$key}=created:{$marker}"]]);
     $firstResponse = m::mock(Response::class);
     $secondResponse = m::mock(Response::class);
     $siteDeleteResponse = m::mock(Response::class);
@@ -862,17 +882,21 @@ test('database deletion failure is reported after site deletion is attempted', f
         'meta' => (object) ['last_page' => 2],
     ]);
     $secondResponse->shouldReceive('getJson')->andReturn((object) [
-        'data' => [(object) ['id' => 9, 'name' => 'api_preview']],
+        'data' => [(object) ['id' => 9, 'name' => 'api_preview', 'site' => (object) ['id' => $associated ? 55 : 999]]],
         'meta' => (object) ['last_page' => 2],
     ]);
     $siteDeleteResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Site deleted']);
     $databases->shouldReceive('page')->with(1, 50)->once()->andReturn($firstResponse);
     $databases->shouldReceive('page')->with(2, 50)->once()->andReturn($secondResponse);
-    $database->shouldReceive('delete')->once()->andThrow(new RuntimeException('permission denied'));
-    $site->shouldReceive('delete')->once()->andReturn($siteDeleteResponse);
+    if ($associated) {
+        $database->shouldReceive('delete')->once()->andThrow(new RuntimeException('permission denied'));
+        $server->shouldReceive('databases')->with(9)->once()->andReturn($database);
+    } else {
+        $database->shouldNotReceive('delete');
+    }
+    $server->shouldReceive('sites')->with(55)->andReturn($site);
+    $site->shouldNotReceive('delete');
     $server->shouldReceive('databases')->withNoArgs()->once()->andReturn($databases);
-    $server->shouldReceive('databases')->with(9)->once()->andReturn($database);
-    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
     $client->shouldReceive('server')->with(123)->once()->andReturn($server);
     $provider = new class($client, $lifecycleClient) extends PloiProvider
     {
@@ -882,6 +906,9 @@ test('database deletion failure is reported after site deletion is attempted', f
         ) {
             parent::__construct(['api_key' => 'token', 'server_id' => '123'], $lifecycleClient);
         }
+
+        // Ownership behavior is exercised separately; this fixture isolates its named operation.
+        protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void {}
 
         protected function getClient(): Ploi
         {
@@ -918,8 +945,8 @@ test('database deletion failure is reported after site deletion is attempted', f
     };
 
     expect($provider->deleteSiteWithDatabases($project, makePluginProfile(), 55))->toBeFalse()
-        ->and($provider->getLastError())->toContain('Failed to delete database api_preview: permission denied');
-});
+        ->and($provider->getLastError())->toContain($associated ? 'permission denied' : 'association with site 55 cannot be proven');
+})->with([true, false]);
 
 test('create-mode retain cleanup deletes the profile site but retains the server', function (): void {
     $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
@@ -934,19 +961,18 @@ test('create-mode retain cleanup deletes the profile site but retains the server
     $siteListResponse = m::mock(Response::class);
     $databaseListResponse = m::mock(Response::class);
     $siteDeleteResponse = m::mock(Response::class);
-    $siteListResponse->shouldReceive('getJson')->andReturn((object) [
-        'data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']],
-        'meta' => (object) ['last_page' => 1],
-    ]);
+    $present = (object) ['data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']], 'meta' => (object) ['last_page' => 1]];
+    $siteListResponse->shouldReceive('getJson')->andReturn($present, $present,
+        (object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
     $databaseListResponse->shouldReceive('getJson')->andReturn((object) [
         'data' => [],
         'meta' => (object) ['last_page' => 1],
     ]);
     $siteDeleteResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Site deleted']);
-    $siteCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($siteListResponse);
+    $siteCollection->shouldReceive('page')->with(1, 50)->times(3)->andReturn($siteListResponse);
     $databaseCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($databaseListResponse);
     $site->shouldReceive('delete')->once()->andReturn($siteDeleteResponse);
-    $server->shouldReceive('sites')->withNoArgs()->once()->andReturn($siteCollection);
+    $server->shouldReceive('sites')->withNoArgs()->times(3)->andReturn($siteCollection);
     $server->shouldReceive('databases')->withNoArgs()->once()->andReturn($databaseCollection);
     $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
     $server->shouldNotReceive('delete');
@@ -959,6 +985,9 @@ test('create-mode retain cleanup deletes the profile site but retains the server
         ) {
             parent::__construct(['api_key' => 'token'], $lifecycleClient);
         }
+
+        // Ownership behavior is exercised separately; this fixture isolates its named operation.
+        protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void {}
 
         protected function getClient(): Ploi
         {
@@ -977,7 +1006,7 @@ test('create-mode retain cleanup deletes the profile site but retains the server
     ))->toBeTrue();
 });
 
-test('existing-site apply refreshes repository and configures before deploy', function (): void {
+test('existing-site apply refreshes repository and validates deployment polling', function (mixed $poll, bool $valid, bool $timedOut = false, bool $slowRead = false, bool $triggerSuccess = true): void {
     $operations = [];
     $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
     $lifecycleClient->shouldReceive('get')->with(123)->once()->andReturn((object) ['id' => 123, 'status' => 'active']);
@@ -989,15 +1018,17 @@ test('existing-site apply refreshes repository and configures before deploy', fu
     $deployment = m::mock(Deployment::class);
     $installResponse = m::mock(Response::class);
     $deployResponse = m::mock(Response::class);
+    $deployResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Deployment has been started', 'success' => $triggerSuccess]);
     $siteListResponse = m::mock(Response::class);
     $siteStatusResponse = m::mock(Response::class);
     $siteListResponse->shouldReceive('getJson')->andReturn((object) [
         'data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']],
         'meta' => (object) ['last_page' => 1],
     ]);
-    $siteStatusResponse->shouldReceive('getJson')->andReturn((object) [
-        'data' => (object) ['deploying' => false, 'status' => 'deployed'],
-    ]);
+    $siteStatusResponse->shouldReceive('getJson')->andReturnUsing(function () use ($poll, $slowRead) {
+        if ($slowRead) usleep(1_100_000);
+        return $poll;
+    });
     $siteCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($siteListResponse);
     $repository->shouldReceive('install')->with('github', 'feature/test', 'ulties/shipper')->once()
         ->andReturnUsing(function () use (&$operations, $installResponse): Response {
@@ -1012,9 +1043,9 @@ test('existing-site apply refreshes repository and configures before deploy', fu
     });
     $site->shouldReceive('repository')->once()->andReturn($repository);
     $site->shouldReceive('deployment')->once()->andReturn($deployment);
-    $site->shouldReceive('get')->once()->andReturn($siteStatusResponse);
+    $site->shouldReceive('get')->times($triggerSuccess ? 1 : 0)->andReturn($siteStatusResponse);
     $server->shouldReceive('sites')->withNoArgs()->once()->andReturn($siteCollection);
-    $server->shouldReceive('sites')->with(55)->times(3)->andReturn($site);
+    $server->shouldReceive('sites')->with(55)->times($triggerSuccess ? 3 : 2)->andReturn($site);
     $client->shouldReceive('server')->with(123)->once()->andReturn($server);
     $provider = new class($client, $lifecycleClient, $operations) extends PloiProvider
     {
@@ -1034,6 +1065,9 @@ test('existing-site apply refreshes repository and configures before deploy', fu
                 'deployment_timeout' => 1,
             ], $lifecycleClient);
         }
+
+        // Ownership behavior is exercised separately; this fixture isolates its named operation.
+        protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void {}
 
         protected function getClient(): Ploi
         {
@@ -1068,6 +1102,12 @@ test('existing-site apply refreshes repository and configures before deploy', fu
             return ['success' => true, 'message' => 'ok'];
         }
 
+        protected function applyWorkloads(object $project, object $profile): array
+        {
+            $this->operations[] = 'workloads';
+            return ['success' => true, 'message' => 'ok'];
+        }
+
         protected function deploymentLogs(int $serverId, int $siteId): array
         {
             return ['old deployment failed'];
@@ -1076,10 +1116,22 @@ test('existing-site apply refreshes repository and configures before deploy', fu
 
     $result = $provider->apply(makePluginProject(), makePluginProfile());
 
-    expect($provider->getLastError())->toBe('')
-        ->and($result)->toBeTrue()
-        ->and($operations)->toBe(['repository', 'aliases', 'deploy-script', 'environment', 'ssl', 'deploy']);
-});
+    expect($result)->toBe($valid)
+        ->and($operations)->toBe([...['repository', 'aliases', 'deploy-script', 'environment', 'ssl', 'deploy'], ...($valid ? ['workloads'] : [])]);
+    if ($valid) expect($provider->getLastError())->toBe('');
+    else expect($provider->getLastError())->toContain(!$triggerSuccess ? 'Ploi did not confirm the deployment trigger.' : ($timedOut ? 'Deployment timeout after 1 seconds.' : 'Ploi returned an invalid deployment site response.'));
+})->with([
+    [(object) ['data' => (object) ['id' => 55, 'server_id' => 123, 'status' => 'active']], true],
+    [(object) ['data' => (object) ['id' => 55, 'status' => 'active']], false, false, false, false],
+    [(object) ['data' => (object) ['id' => 55, 'status' => 'deploying']], false, true],
+    [(object) ['data' => (object) ['id' => 55, 'status' => 'active']], false, true, true],
+    [(object) ['data' => (object) ['id' => 56, 'status' => 'active']], false],
+    [(object) ['data' => (object) ['id' => 55, 'server_id' => 124, 'status' => 'active']], false],
+    [(object) ['data' => (object) ['id' => 55]], false],
+    [(object) ['data' => (object) ['id' => 55, 'status' => 'unexpected']], false],
+    [(object) ['success' => false, 'data' => (object) ['id' => 55, 'status' => 'active']], false],
+    [(object) ['data' => (object) ['id' => 55, 'status' => 'active', 'deploying' => 0]], false],
+]);
 
 test('create-mode readiness waits until the server becomes active', function (): void {
     $lifecycleClient = m::mock(ServerLifecycleClientInterface::class);
@@ -1108,7 +1160,7 @@ test('create-mode readiness waits until the server becomes active', function ():
     expect(true)->toBeTrue();
 });
 
-test('generated database credentials are merged into the site environment', function (): void {
+test('generated database credentials are merged into the site environment', function (bool $hasEnvironment): void {
     $capturedEnvironment = '';
     $client = m::mock(Ploi::class);
     $server = m::mock(Server::class);
@@ -1116,8 +1168,10 @@ test('generated database credentials are merged into the site environment', func
     $environment = m::mock(Environment::class);
     $getResponse = m::mock(Response::class);
     $updateResponse = m::mock(Response::class);
-    $getResponse->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['content' => 'APP_ENV=production']]);
-    $environment->shouldReceive('get')->once()->andReturn($getResponse);
+    $getResponse->shouldReceive('getJson')->andReturnUsing(function () use (&$capturedEnvironment) {
+        return (object) ['data' => (object) ['content' => $capturedEnvironment ?? 'APP_ENV=production']];
+    });
+    $environment->shouldReceive('get')->twice()->andReturn($getResponse);
     $environment->shouldReceive('update')->once()->andReturnUsing(function (string $content) use (&$capturedEnvironment, $updateResponse): Response {
         $capturedEnvironment = $content;
 
@@ -1181,11 +1235,16 @@ test('generated database credentials are merged into the site environment', func
         }
     };
 
+    if (! $hasEnvironment) {
+        $project = new class {};
+        $profile = new class {};
+    }
+
     expect($provider->applyGeneratedEnvironment($project, $profile)['success'])->toBeTrue()
         ->and($capturedEnvironment)->toContain('DB_DATABASE=api_preview')
         ->and($capturedEnvironment)->toContain('DB_USERNAME=api')
         ->and($capturedEnvironment)->toContain('DB_PASSWORD=generated-secret');
-});
+})->with([true, false]);
 
 test('validation accepts a supported PHP version shape', function (): void {
     $project = new class
@@ -1246,7 +1305,7 @@ test('plan includes configured Ploi queue workers, cron jobs, and daemons', func
         public function cron(): array { return ['scheduler' => (object) ['enabled' => fn (): bool => true]]; }
         public function daemons(): array { return ['horizon' => (object) ['enabled' => fn (): bool => true]]; }
     };
-    $provider = new PloiProvider(['api_key' => 'token', 'server_id' => '123']);
+    $provider = emptyInventoryPlanProvider();
 
     $plan = $provider->plan($project, makePluginProfile());
 

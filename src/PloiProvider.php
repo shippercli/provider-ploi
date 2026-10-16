@@ -61,13 +61,20 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             'env' => ['state' => 'supported'],
             'observability' => ['state' => 'partial', 'limitations' => ['Deployment and error logs are available, but application metrics are not exposed through the provider.']],
             'rollback' => ['state' => 'unsupported'],
-            'previews' => ['state' => 'partial', 'limitations' => ['Profiles can target preview domains, but automated preview lifecycle cleanup is not implemented.']],
+            'previews' => ['state' => 'partial', 'limitations' => ['The CLI orphan-cleanup flow removes owned preview sites, configured databases attached to those sites, and managed workloads when the profile is named preview and its domain contains ${GITHUB_PR_NUMBER}. Cleanup verifies ownership and database association; it does not clean up preview resources for arbitrary domain patterns.']],
         ];
     }
 
     public function validate(object $project, object $profile): array
     {
         $errors = [];
+        try {
+            $this->databaseEnvironmentPrefixes($project);
+            $this->assertUniqueResolvedDatabaseNames($project, $profile);
+            $this->configuredDatabasePasswords($project, $profile);
+        } catch (\InvalidArgumentException|\RuntimeException $exception) {
+            $errors[] = $exception->getMessage();
+        }
 
         $apiKey = $this->config['api_key'] ?? null;
         if (! \is_string($apiKey) || $apiKey === '') {
@@ -85,6 +92,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 $errors[] = 'Ploi server ID must contain only digits';
             }
         } else {
+            if (($server['mode'] ?? null) === 'create' && \method_exists($project, 'phpVersion')
+                && \is_string($project->phpVersion()) && $project->phpVersion() !== ''
+                && \is_array($server['spec'] ?? null) && ! \array_key_exists('php_version', $server['spec'])) {
+                $server['spec']['php_version'] = $project->phpVersion();
+            }
             $errors = [...$errors, ...$this->validateServerLifecycle($server)];
         }
 
@@ -175,6 +187,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
     public function plan(object $project, object $profile): array
     {
+        $this->assertUniqueResolvedDatabaseNames($project, $profile);
+        $this->configuredDatabasePasswords($project, $profile);
         $server = $this->extractServerLifecycle($profile);
         $serverId = $server !== null && ($server['mode'] ?? null) === 'create' ? null : $this->getServerId($profile);
         $actions = [];
@@ -199,10 +213,35 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $repoProvider = \is_string($repository['provider'] ?? null) ? $repository['provider'] : 'unknown';
         $repoName = \is_string($repository['name'] ?? null) ? $repository['name'] : 'unknown';
 
-        $actions[] = 'Create or find site for domain: '.(\is_string($domain) ? $domain : '');
-        $actions[] = "Install repository: {$repoProvider}:{$repoName} ({$branch})";
+        $blocked = null;
+        $siteIdForPlan = null;
+        if ($serverId !== null) {
+            try {
+                $siteForPlan = null;
+                foreach ($this->siteInventory($this->getClient()->server((int) $serverId)->sites()) as $candidate) {
+                    if (! \is_string($candidate->domain ?? null) || ! \is_int($candidate->id ?? null) || $candidate->id < 1) {
+                        throw new \RuntimeException('Ploi site inventory contains an invalid identity.');
+                    }
+                    if ($this->domainsMatch($candidate->domain, $domain)) {
+                        $this->assertSiteOwnership($project, $profile, (int) $serverId, $candidate->id);
+                        $siteForPlan = $candidate;
+                        $siteIdForPlan = $candidate->id;
+                    }
+                }
+                if ($siteForPlan !== null) {
+                    $this->planDatabaseActions($actions, $this->getClient()->server((int) $serverId), $siteIdForPlan, $project, $profile);
+                }
+            } catch (\Throwable) {
+                $blocked = 'Unable to verify matching Ploi site and database ownership. Check API access and review the project/profile markers before deployment.';
+            }
+        }
 
-        foreach ($this->projectDatabases($project) as $database) {
+        if ($blocked === null) {
+            $actions[] = 'Create or find site for domain: '.(\is_string($domain) ? $domain : '');
+            $actions[] = "Install repository: {$repoProvider}:{$repoName} ({$branch})";
+        }
+
+        if ($serverId === null || $siteIdForPlan === null) foreach ($this->projectDatabases($project) as $database) {
             $dbName = $this->interpolateDatabaseName(
                 $this->databaseValue($database, 'name'),
                 $this->projectName($project),
@@ -245,8 +284,9 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             'repository' => "{$repoProvider}:{$repoName}",
             'web_directory' => $this->projectWebDirectory($project),
             'project_root' => $this->projectRoot($project),
-            'actions' => $actions,
-            'note' => $note,
+            'blocked' => $blocked !== null,
+            'actions' => $blocked === null ? $actions : ['BLOCKED: '.$blocked],
+            'note' => $blocked === null ? $note : 'No deployment actions are authorized by this plan.',
         ];
     }
 
@@ -258,6 +298,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $serverId = 0;
 
         try {
+            $this->assertUniqueResolvedDatabaseNames($project, $profile);
+            $this->configuredDatabasePasswords($project, $profile);
             $serverId = $this->resolveServerIdForProfile($project, $profile, true);
             $serverLifecycle = $this->extractServerLifecycle($profile);
             if (($serverLifecycle['mode'] ?? null) === 'create') {
@@ -279,8 +321,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $repoName = \is_string($repository['name'] ?? null) ? $repository['name'] : '';
 
             $existingSite = null;
-            foreach ($this->paginatedData($server->sites()) as $site) {
-                if (\property_exists($site, 'domain') && $site->domain === $domain) {
+            foreach ($this->siteInventory($server->sites()) as $site) {
+                if (\property_exists($site, 'domain') && $this->domainsMatch($site->domain, $domain)) {
                     $existingSite = $site;
                     break;
                 }
@@ -309,52 +351,17 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 }
 
                 $siteId = (int) $existingSite->id;
+                $this->assertSiteOwnership($project, $profile, $serverId, $siteId);
             }
 
             $server->sites($siteId)->repository()->install($repoProvider, $branch, $repoName);
 
             $this->lastServerId = $serverId;
             $this->lastSiteId = $siteId;
+            $this->generatedEnvironment = ['SHIPPERCLI_OWNERSHIP' => $this->siteOwnershipMarker($project, $profile)];
 
-            foreach ($this->projectDatabases($project) as $database) {
-                $dbName = $this->interpolateDatabaseName(
-                    $this->databaseValue($database, 'name'),
-                    $this->projectName($project),
-                    $this->profileName($profile),
-                );
-                $dbUser = $this->interpolateDatabaseName(
-                    $this->databaseValue($database, 'user'),
-                    $this->projectName($project),
-                    $this->profileName($profile),
-                );
-
-                $exists = false;
-
-                foreach ($this->paginatedData($server->databases()) as $db) {
-                    if (\property_exists($db, 'name') && $db->name === $dbName) {
-                        $linkedSite = $db->site ?? null;
-                        if (! \is_object($linkedSite) || ! \property_exists($linkedSite, 'id') || (int) $linkedSite->id !== $siteId) {
-                            $this->lastError = "Existing Ploi database {$dbName} is not attached to site {$siteId}; the Ploi API only accepts site_id when creating a database";
-
-                            return false;
-                        }
-
-                        $exists = true;
-                        break;
-                    }
-                }
-
-                if (! $exists) {
-                    $password = $this->generateDatabasePassword();
-                    $server->databases()->create($dbName, $dbUser, $password, null, $siteId);
-                    if ($this->generatedEnvironment === []) {
-                        $this->generatedEnvironment = [
-                            'DB_DATABASE' => $dbName,
-                            'DB_USERNAME' => $dbUser,
-                            'DB_PASSWORD' => $password,
-                        ];
-                    }
-                }
+            if (! $this->applyDatabases($server, $siteId, $project, $profile)) {
+                return false;
             }
 
             $configuration = $this->postApply($project, $profile);
@@ -365,32 +372,27 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
 
             $site = $server->sites($siteId);
-            $site->deployment()->deploy();
+            $this->startDeployment($site);
 
             $timeout = $this->getDeploymentTimeout();
             $pollInterval = 5;
-            $elapsed = 0;
-            $initialCheck = true;
+            $deadline = \hrtime(true) / 1_000_000_000 + $timeout;
 
-            while ($elapsed < $timeout) {
-                if (! $initialCheck) {
-                    \sleep($pollInterval);
-                    $elapsed += $pollInterval;
+            while (\hrtime(true) / 1_000_000_000 < $deadline) {
+                $response = $server->sites($siteId)->get()->getJson();
+                if (\hrtime(true) / 1_000_000_000 >= $deadline) {
+                    break;
                 }
-                $initialCheck = false;
-
-                $siteInfo = $server->sites($siteId)->get()->getJson()->data ?? null;
-                if ($siteInfo === null) {
+                $state = $this->deploymentSiteState($response, $serverId, $siteId);
+                if ($state === 'pending') {
+                    $remaining = $deadline - \hrtime(true) / 1_000_000_000;
+                    if ($remaining > 0) {
+                        \usleep((int) (\min($pollInterval, $remaining) * 1_000_000));
+                    }
                     continue;
                 }
 
-                $isDeploying = \property_exists($siteInfo, 'deploying') ? (bool) $siteInfo->deploying : false;
-                if ($isDeploying) {
-                    continue;
-                }
-
-                $status = \property_exists($siteInfo, 'status') ? $siteInfo->status : null;
-                if ($status === 'deploy-failed') {
+                if ($state === 'failed') {
                     $this->lastError = 'Deployment failed on Ploi server (status: deploy-failed)';
                     \sleep(self::LOG_FETCH_DELAY_SECONDS);
                     $logs = $this->getDeploymentLogs($serverId, $siteId);
@@ -421,11 +423,255 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
     }
 
+    private function startDeployment(object $site): void
+    {
+        try {
+            $response = $site->deployment()->deploy()->getJson();
+            if (! \is_object($response) || ($response->errors ?? []) !== []
+                || ! \in_array($response->error ?? null, [null, '', false], true)
+                || (\property_exists($response, 'success') && $response->success !== true)
+                || ($response->message ?? null) !== 'Deployment has been started') {
+                throw new \RuntimeException('Unconfirmed deployment.');
+            }
+        } catch (\Throwable) {
+            throw new \RuntimeException('Ploi did not confirm the deployment trigger.');
+        }
+    }
+
+    private function deploymentSiteState(mixed $response, int $serverId, int $siteId): string
+    {
+        $site = \is_object($response) ? ($response->data ?? null) : null;
+        if (! \is_object($response) || ($response->errors ?? []) !== []
+            || ! \in_array($response->error ?? null, [null, '', false], true)
+            || (\property_exists($response, 'success') && $response->success !== true)
+            || ! \is_object($site) || $this->positiveResourceId($site->id ?? null) !== $siteId
+            || (\property_exists($site, 'server_id') && $this->positiveResourceId($site->server_id) !== $serverId)
+            || ! \is_string($site->status ?? null)
+            || (\property_exists($site, 'deploying') && ! \is_bool($site->deploying))) {
+            throw new \RuntimeException('Ploi returned an invalid deployment site response.');
+        }
+        if ($site->status === 'deploy-failed') return 'failed';
+        if ($site->status === 'active') return ($site->deploying ?? false) ? 'pending' : 'ready';
+        if (\in_array($site->status, ['created', 'building', 'deploying', 'repository-installing',
+            'repository-uninstalling', 'wordpress-installing', 'wordpress-uninstalling',
+            'nextcloud-installing', 'nextcloud-uninstalling', 'statamic-installing',
+            'statamic-uninstalling', 'octobercms-installing', 'octobercms-uninstalling',
+            'clone-in-progress', 'staging-production-syncing'], true)) return 'pending';
+
+        throw new \RuntimeException('Ploi returned an invalid deployment site response.');
+    }
+
+    /** @return array<string, string> */
+    private function databaseEnvironmentPrefixes(object $project): array
+    {
+        $databases = $this->projectDatabases($project) !== []
+            ? $this->projectDatabases($project) : [];
+        $configured = $this->config['database_environment_prefixes'] ?? [];
+        if (! \is_array($configured)) {
+            throw new \InvalidArgumentException('Ploi database_environment_prefixes must be a map of database names to environment prefixes.');
+        }
+        $prefixes = [];
+        foreach ($databases as $database) {
+            if (! \is_object($database) || ! \method_exists($database, 'name')) {
+                throw new \InvalidArgumentException('Ploi database declarations require a name.');
+            }
+            $type = \method_exists($database, 'type') ? $database->type() : 'mysql';
+            if (! \in_array($type, ['mysql', 'mariadb', 'postgres', 'postgresql', 'pgsql'], true)) {
+                throw new \InvalidArgumentException('Ploi database declarations require mysql, mariadb or PostgreSQL.');
+            }
+            $name = $database->name();
+            $prefix = $configured[$name] ?? (\count($databases) === 1 ? 'DB' : null);
+            if (! \is_string($prefix) || \preg_match('/\A[A-Z_][A-Z0-9_]*\z/', $prefix) !== 1) {
+                throw new \InvalidArgumentException("Ploi database {$name} requires a valid database_environment_prefixes entry when multiple databases are declared.");
+            }
+            if (isset($prefixes[$name]) || \in_array($prefix, $prefixes, true)) {
+                throw new \InvalidArgumentException('Ploi database names and environment prefixes must be unique.');
+            }
+            $prefixes[$name] = $prefix;
+        }
+
+        return $prefixes;
+    }
+
+    private function assertUniqueResolvedDatabaseNames(object $project, object $profile): void
+    {
+        $names = [];
+        foreach ($this->projectDatabases($project) as $database) {
+            $name = $this->interpolateDatabaseName($this->databaseValue($database, 'name'),
+                $this->projectName($project), $this->profileName($profile));
+            if (\in_array($name, $names, true)) {
+                throw new \InvalidArgumentException('Resolved Ploi database names must be unique.');
+            }
+            $names[] = $name;
+        }
+    }
+
+    /** @return array<string, mixed> */
+    private function parseCompleteEnvironment(string $content): array
+    {
+        $probe = '__SHIPPER_ENV_END_'.\bin2hex(\random_bytes(16));
+        $values = \Dotenv\Dotenv::parse($content."\n".$probe."=1\n");
+        if (($values[$probe] ?? null) !== '1') {
+            throw new \RuntimeException('Application environment input is incomplete.');
+        }
+        unset($values[$probe]);
+        return $values;
+    }
+
+    /** @return array<string, string> */
+    private function configuredDatabasePasswords(object $project, object $profile): array
+    {
+        $configured = $this->configuredEnvironment($project, $profile);
+        $passwords = [];
+        foreach ($this->databaseEnvironmentPrefixes($project) as $prefix) {
+            $key = $prefix.'_PASSWORD';
+            if (! \array_key_exists($key, $configured)) {
+                continue;
+            }
+            if (! \is_string($configured[$key]) || $configured[$key] === '') {
+                throw new \InvalidArgumentException('Explicit Ploi database passwords must be nonempty strings.');
+            }
+            $passwords[$key] = $configured[$key];
+        }
+        return $passwords;
+    }
+
+    private function applyDatabases(object $server, int $siteId, object $project, object $profile): bool
+    {
+        $this->assertUniqueResolvedDatabaseNames($project, $profile);
+        $prefixes = $this->databaseEnvironmentPrefixes($project);
+        $configuredPasswords = $this->configuredDatabasePasswords($project, $profile);
+        foreach ($this->projectDatabases($project) as $database) {
+            $dbName = $this->interpolateDatabaseName(
+                $this->databaseValue($database, 'name'),
+                $this->projectName($project),
+                $this->profileName($profile),
+            );
+            $dbUser = $this->interpolateDatabaseName(
+                $this->databaseValue($database, 'user'),
+                $this->projectName($project),
+                $this->profileName($profile),
+            );
+
+            $exists = false;
+            $prefix = $prefixes[$this->databaseValue($database, 'name')];
+
+            foreach ($this->databaseInventory($server->databases()) as $db) {
+                if (\property_exists($db, 'name') && $db->name === $dbName) {
+                    $linkedSite = $db->site ?? null;
+                    if (! \is_object($linkedSite) || ! \property_exists($linkedSite, 'id') || $this->positiveResourceId($linkedSite->id) !== $siteId) {
+                        $this->lastError = "Existing Ploi database {$dbName} is not attached to site {$siteId}; the Ploi API only accepts site_id when creating a database";
+
+                        return false;
+                    }
+
+                    try {
+                        [, $existing] = $this->readSiteEnvironment($server->sites($siteId)->environment());
+                        $available = [...$existing, ...$this->configuredEnvironment($project, $profile)];
+                    } catch (\Throwable) {
+                        $this->lastError = 'Cannot parse the existing Ploi site environment; review its connection settings before reusing a database.';
+
+                        return false;
+                    }
+                    if (($available[$prefix.'_DATABASE'] ?? null) !== $dbName
+                        || ($available[$prefix.'_USERNAME'] ?? null) !== $dbUser
+                        || ! \is_string($available[$prefix.'_PASSWORD'] ?? null) || $available[$prefix.'_PASSWORD'] === ''
+                        || ! \is_string($available[$prefix.'_HOST'] ?? null) || $available[$prefix.'_HOST'] === '') {
+                        $this->lastError = "Existing Ploi database {$dbName} requires matching {$prefix} connection settings and a password in the application environment.";
+
+                        return false;
+                    }
+                    $stateKey = $this->databaseOwnershipKey($dbName);
+                    $scopeMarker = $this->databaseOwnershipMarker($project, $profile, $dbName);
+                    $storedState = $existing[$stateKey] ?? null;
+                    if ($storedState !== null && ! \in_array($storedState, ['created:'.$scopeMarker, 'adopted:'.$scopeMarker], true)) {
+                        $this->lastError = "Existing Ploi database {$dbName} has conflicting Shipper ownership evidence; review it before deployment.";
+
+                        return false;
+                    }
+                    if ($storedState === null) {
+                        if (! $this->databaseAdoptionAuthorized($project, $profile, $dbName)) {
+                            $this->lastError = "Existing Ploi database {$dbName} is not marked as Shipper-created; exact-scope adoption consent is required.";
+
+                            return false;
+                        }
+                        $this->generatedEnvironment[$stateKey] = 'adopted:'.$scopeMarker;
+                        $this->deliverDatabaseEnvironment($server, $siteId);
+                    }
+                    $exists = true;
+                    break;
+                }
+            }
+
+            if (! $exists) {
+                $prefix = $prefixes[$this->databaseValue($database, 'name')];
+                $password = $configuredPasswords[$prefix.'_PASSWORD'] ?? $this->generateDatabasePassword();
+                try {
+                    $created = $server->databases()->create($dbName, $dbUser, $password, null, $siteId)->getJson();
+                } catch (\Throwable) {
+                    throw new \RuntimeException('Ploi did not confirm the requested database creation identity.');
+                }
+                $record = \is_object($created) ? ($created->data ?? null) : null;
+                if (! \is_object($created) || ($created->errors ?? []) !== []
+                    || ! \in_array($created->error ?? null, [null, '', false], true)
+                    || (\property_exists($created, 'success') && $created->success !== true)
+                    || ! \is_object($record) || $this->positiveResourceId($record->id ?? null) === null
+                    || ($record->name ?? null) !== $dbName
+                    || (\property_exists($record, 'site') && (! \is_object($record->site)
+                        || $this->positiveResourceId($record->site->id ?? null) !== $siteId))) {
+                    throw new \RuntimeException('Ploi did not confirm the requested database creation identity.');
+                }
+                $prefix = $prefixes[$this->databaseValue($database, 'name')];
+                $this->generatedEnvironment = [...$this->generatedEnvironment,
+                    $this->databaseOwnershipKey($dbName) => 'created:'.$this->databaseOwnershipMarker($project, $profile, $dbName),
+                    $prefix.'_HOST' => (string) ($this->config['database_host'] ?? '127.0.0.1'),
+                    $prefix.'_DATABASE' => $dbName,
+                    $prefix.'_USERNAME' => $dbUser,
+                    $prefix.'_PASSWORD' => $password,
+                ];
+                $this->deliverDatabaseEnvironment($server, $siteId);
+            }
+        }
+        return true;
+    }
+
+    /** @return array{string, array<string, string>} */
+    private function readSiteEnvironment(object $environment): array
+    {
+        $response = $environment->get()->getJson();
+        if (! \is_object($response) || ($response->errors ?? []) !== []
+            || ! \in_array($response->error ?? null, [null, '', false], true)
+            || (\property_exists($response, 'success') && $response->success !== true)
+            || ! \is_string($response->data->content ?? null)) {
+            throw new \RuntimeException('Unreadable Ploi database environment.');
+        }
+
+        return [$response->data->content, $this->parseCompleteEnvironment($response->data->content)];
+    }
+
+    private function deliverDatabaseEnvironment(object $server, int $siteId): void
+    {
+        try {
+            $environment = $server->sites($siteId)->environment();
+            [$content] = $this->readSiteEnvironment($environment);
+            $environment->update($this->mergeEnvironment($content, $this->generatedEnvironment));
+            [, $stored] = $this->readSiteEnvironment($environment);
+            foreach ($this->generatedEnvironment as $key => $value) {
+                if (($stored[$key] ?? null) !== $value) {
+                    throw new \RuntimeException('Connection readback mismatch.');
+                }
+            }
+        } catch (\Throwable) {
+            throw new \RuntimeException('Ploi did not confirm storage of the created database connection; provisioning stopped.');
+        }
+    }
+
     public function destroy(object $project, object $profile): bool
     {
         $this->lastError = '';
 
         try {
+            $this->assertUniqueResolvedDatabaseNames($project, $profile);
             $serverConfig = $this->extractServerLifecycle($profile);
             if ($serverConfig !== null && ($serverConfig['mode'] ?? null) === 'create') {
                 $serverId = $this->resolveServerIdForProfile($project, $profile);
@@ -445,8 +691,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
 
             $existingSite = null;
-            foreach ($this->paginatedData($server->sites()) as $site) {
-                if (\property_exists($site, 'domain') && $site->domain === $domain) {
+            foreach ($this->siteInventory($server->sites()) as $site) {
+                if (\property_exists($site, 'domain') && $this->domainsMatch($site->domain, $domain)) {
                     $existingSite = $site;
                     break;
                 }
@@ -463,39 +709,12 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
 
             $siteId = (int) $existingSite->id;
-            foreach ($this->projectDatabases($project) as $database) {
-                $dbName = $this->interpolateDatabaseName(
-                    $this->databaseValue($database, 'name'),
-                    $this->projectName($project),
-                    $this->profileName($profile),
-                );
-                foreach ($this->paginatedData($server->databases()) as $db) {
-                    if (\property_exists($db, 'name') && $db->name === $dbName && \property_exists($db, 'id')) {
-                        try {
-                            $server->databases((int) $db->id)->delete();
-                        } catch (\Throwable $exception) {
-                            $this->lastError = "Failed to delete database {$dbName}: ".$exception->getMessage();
-
-                            return false;
-                        }
-                        break;
-                    }
-                }
-            }
-
-            $this->removeManagedWorkloads($server, $project, $profile);
-            $response = $server->sites($siteId)->delete();
-            $message = $response->getJson()->message ?? null;
-            if (\is_string($message)) {
-                $messageLower = \strtolower($message);
-                if (\str_contains($messageLower, 'error') || \str_contains($messageLower, 'failed')) {
-                    $this->lastError = 'Failed to delete site: '.$message;
-
-                    return false;
-                }
-            }
-
-            return true;
+            return $this->deleteSiteAndDatabases(
+                $project,
+                $profile,
+                (int) $this->getServerId($profile),
+                $siteId,
+            );
         } catch (\Throwable $e) {
             $this->lastError = 'Destroy error: '.$e->getMessage().' (Type: '.\get_class($e).')';
 
@@ -517,8 +736,13 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         $sites = [];
-        foreach ($this->paginatedData($this->getClient()->server($serverId)->sites()) as $site) {
+        foreach ($this->siteInventory($this->getClient()->server($serverId)->sites()) as $site) {
             if (\property_exists($site, 'id') && \property_exists($site, 'domain')) {
+                try {
+                    $this->assertSiteOwnership($project, $profile, $serverId, (int) $site->id);
+                } catch (\Throwable) {
+                    continue;
+                }
                 $sites[] = ['site_id' => (int) $site->id, 'domain' => (string) $site->domain];
             }
         }
@@ -553,17 +777,18 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         $operations = [
-            $this->applyAliases($profile),
-            $this->applyDeployScript($project, $profile),
-            $this->applyEnvironment($project, $profile),
-            $this->applySsl($project, $profile),
-            $this->applyPhpVersion($project),
-            $this->applyNginxConfig($project),
-            $this->applyRedirects($project),
-            $this->applyNetworkRules($project, $profile),
+            fn (): array => $this->applyAliases($profile),
+            fn (): array => $this->applyDeployScript($project, $profile),
+            fn (): array => $this->applyEnvironment($project, $profile),
+            fn (): array => $this->applySsl($project, $profile),
+            fn (): array => $this->applyPhpVersion($project),
+            fn (): array => $this->applyNginxConfig($project),
+            fn (): array => $this->applyRedirects($project),
+            fn (): array => $this->applyNetworkRules($project, $profile),
         ];
 
-        foreach ($operations as $operation) {
+        foreach ($operations as $run) {
+            $operation = $run();
             if (! ($operation['success'] ?? false)) {
                 $message = $operation['message'] ?? 'Ploi post-apply configuration failed';
 
@@ -592,12 +817,19 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         $site = $this->findSite($serverId, $this->profileDomain($profile));
+        $observed = $site->status ?? null;
+        $state = $site === null ? 'not_found' : (\is_string($observed)
+            && \preg_match('/\A[a-z][a-z0-9_-]{0,63}\z/i', $observed) === 1 ? $observed : 'unknown');
 
         return [
             'provider' => 'ploi',
-            'state' => $site === null ? 'server_ready' : 'deployed',
+            'state' => $state,
             'server_id' => $serverId,
-            'site' => $site,
+            'site' => $site === null ? null : (object) [
+                'id' => $this->positiveResourceId($site->id ?? null),
+                'domain' => $site->domain,
+                'status' => $state,
+            ],
         ];
     }
 
@@ -685,29 +917,26 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @return array{success: bool, message: string} */
     protected function applyEnvironment(object $project, object $profile): array
     {
-        $projectEnvironment = \method_exists($project, 'environment') ? $project->environment() : null;
-        $profileEnvironment = \method_exists($profile, 'environment') ? $profile->environment() : null;
-        if (! \is_object($projectEnvironment) || ! \method_exists($projectEnvironment, 'mergeWith') || ! \is_object($profileEnvironment)) {
-            return ['success' => true, 'message' => 'No environment variables to configure'];
-        }
-
-        $merged = $projectEnvironment->mergeWith($profileEnvironment);
-        $variables = \is_object($merged) && \method_exists($merged, 'variables') ? $merged->variables() : [];
-        if (\is_array($variables)) {
-            $variables = [...$variables, ...$this->generatedEnvironment];
-        }
-        if (! \is_array($variables) || $variables === []) {
+        $variables = [...$this->configuredEnvironment($project, $profile), ...$this->generatedEnvironment];
+        if ($variables === []) {
             return ['success' => true, 'message' => 'No environment variables to configure'];
         }
 
         try {
             $environment = $this->getClient()->server($this->lastServerId)->sites($this->lastSiteId)->environment();
-            $existing = $environment->get()->getJson()->data->content ?? '';
-            $environment->update($this->mergeEnvironment(\is_string($existing) ? $existing : '', $variables));
+            [$existing] = $this->readSiteEnvironment($environment);
+            $environment->update($this->mergeEnvironment($existing, $variables));
+            [, $stored] = $this->readSiteEnvironment($environment);
+            foreach ($variables as $key => $value) {
+                if (\is_scalar($value) && ($stored[$key] ?? null) !== (string) $value) {
+                    throw new \RuntimeException('Environment readback mismatch.');
+                }
+            }
+
 
             return ['success' => true, 'message' => 'Environment variables configured successfully'];
         } catch (\Throwable $exception) {
-            return ['success' => false, 'message' => 'Failed to configure environment variables: '.$exception->getMessage()];
+            return ['success' => false, 'message' => 'Ploi did not confirm the requested environment configuration.'];
         }
     }
 
@@ -1367,22 +1596,45 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /** @param array<string, mixed> $variables */
     private function mergeEnvironment(string $content, array $variables): string
     {
-        $lines = $content === '' ? [] : \preg_split('/\r?\n/', $content);
-        $values = [];
-        foreach (\is_array($lines) ? $lines : [] as $line) {
-            if (\str_contains($line, '=')) {
-                [$key, $value] = \explode('=', $line, 2);
-                $values[$key] = $value;
-            }
-        }
-
         foreach ($variables as $key => $value) {
-            if (\is_string($key) && \is_scalar($value)) {
-                $values[$key] = (string) $value;
+            if (! \is_string($key) || \preg_match('/\A[A-Za-z_][A-Za-z0-9_]*\z/', $key) !== 1) {
+                throw new \InvalidArgumentException('Invalid environment variable name.');
+            }
+            if (! \is_scalar($value)) {
+                continue;
+            }
+            $value = (string) $value;
+            if ($value === '' || \preg_match('/[\s#=\\\\"\x27$]/', $value) === 1) {
+                $value = '"'.\str_replace(
+                    ['\\', '"', '$', "\r", "\n"],
+                    ['\\\\', '\\"', '\\$', '\\r', '\\n'],
+                    $value,
+                ).'"';
+            }
+            $line = $key.'='.$value;
+            // Match a complete assignment, including an existing quoted multiline value.
+            $pattern = '/^(?:export[ \t]+)?'.\preg_quote($key, '/').'[ \t]*=[ \t]*(?:"(?:\\\\.|[^"\\\\])*"|\x27[^\x27]*\x27|[^\r\n]*)[^\r\n]*(?:\r?\n|$)/m';
+            if (\preg_match($pattern, $content) === 1) {
+                $content = (string) \preg_replace_callback($pattern, static fn (): string => $line."\n", $content);
+            } else {
+                $content = \rtrim($content, "\r\n")."\n".$line."\n";
             }
         }
 
-        return \implode("\n", \array_map(static fn (string $key, string $value): string => "{$key}={$value}", \array_keys($values), $values));
+        return $content;
+    }
+
+    /** @return array<string, mixed> */
+    private function configuredEnvironment(object $project, object $profile): array
+    {
+        $variables = [];
+        foreach ([$project, $profile] as $source) {
+            $environment = \method_exists($source, 'environment') ? $source->environment() : null;
+            $values = \is_object($environment) && \method_exists($environment, 'variables') ? $environment->variables() : [];
+            if (\is_array($values)) $variables = [...$variables, ...$values];
+        }
+
+        return $variables;
     }
 
     private function profileDomain(object $profile): string
@@ -1394,18 +1646,22 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
     private function findSite(int $serverId, string $domain): ?object
     {
-        $sites = $this->getClient()->server($serverId)->sites()->get()->getJson()->data ?? null;
-        if (! \is_array($sites)) {
-            return null;
-        }
-
-        foreach ($sites as $site) {
-            if (\is_object($site) && \property_exists($site, 'domain') && $site->domain === $domain) {
+        foreach ($this->siteInventory($this->getClient()->server($serverId)->sites()) as $site) {
+            if (! \is_string($site->domain ?? null) || ! \is_int($site->id ?? null) || $site->id < 1) {
+                throw new \RuntimeException('Ploi site inventory contains an invalid identity.');
+            }
+            if ($this->domainsMatch($site->domain, $domain)) {
                 return $site;
             }
         }
 
         return null;
+    }
+
+    private function domainsMatch(mixed $first, mixed $second): bool
+    {
+        return \is_string($first) && \is_string($second)
+            && \strtolower($first) === \strtolower($second);
     }
 
     /** @return array<int, string> */
@@ -1419,7 +1675,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         if ($this->client === null) {
             $apiKey = $this->config['api_key'] ?? '';
             \assert(\is_string($apiKey));
-            $this->client = new Ploi($apiKey);
+            $this->client = new PloiApiClient($apiKey);
         }
 
         return $this->client;
@@ -1501,6 +1757,24 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             if (! \is_string($plan) || $plan === '') {
                 $errors[] = 'Ploi create server mode requires infrastructure.server.spec.plan (or size)';
             }
+
+            $allowedOptions = [
+                'type' => ['server', 'load-balancer', 'database-server', 'redis-server'],
+                'database_type' => ['none', 'mysql', 'mysql84', 'mysql9', 'mariadb', 'mariadb114', 'postgresql', 'postgresql14', 'postgresql15', 'postgresql16', 'postgresql17', 'postgresql18'],
+                'webserver_type' => ['nginx', 'nginx-docker'],
+                'php_version' => ['none', '5.6', '7.0', '7.1', '7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5'],
+                'os_type' => ['ubuntu-24-04-lts', 'ubuntu-26-04-lts', 'debian-12', 'debian-13'],
+                'ip_type' => ['ipv4', 'ipv6', 'ipv4-ipv6', 'ipv6-ipv4'],
+            ];
+            foreach ($allowedOptions as $field => $values) {
+                if (\array_key_exists($field, $spec)
+                    && (! \is_string($spec[$field]) || ! \in_array($spec[$field], $values, true))) {
+                    $errors[] = 'Ploi infrastructure.server.spec.'.$field.' must be one of: '.\implode(', ', $values);
+                }
+            }
+            if (\array_key_exists('install_monitoring', $spec) && ! \is_bool($spec['install_monitoring'])) {
+                $errors[] = 'Ploi infrastructure.server.spec.install_monitoring must be a boolean';
+            }
         }
 
         $cleanup = $server['cleanup'] ?? null;
@@ -1540,13 +1814,26 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             return null;
         }
 
+        $match = null;
+        $seenIds = [];
         foreach ($this->getServerLifecycleClient()->list() as $server) {
-            if (\is_object($server) && \property_exists($server, 'name') && \property_exists($server, 'id') && $server->name === $name) {
-                return (int) $server->id;
+            $rawId = \is_object($server) ? ($server->id ?? null) : null;
+            $id = (\is_int($rawId) || \is_string($rawId))
+                ? \filter_var($rawId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) : false;
+            $serverName = \is_object($server) ? ($server->name ?? null) : null;
+            if ($id === false || isset($seenIds[$id]) || ! \is_string($serverName)
+                || $serverName === '' || \trim($serverName) !== $serverName) {
+                throw new \RuntimeException('Ploi server discovery received an invalid or duplicate identity');
+            }
+            $seenIds[$id] = true;
+            if ($serverName === $name) {
+                if ($match !== null) {
+                    throw new \RuntimeException('Ploi server discovery found multiple servers with the managed name');
+                }
+                $match = $id;
             }
         }
-
-        return null;
+        return $match;
     }
 
     /**
@@ -1555,6 +1842,14 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     private function createServerFromLifecycle(object $project, object $profile, array $server): int
     {
         $spec = \is_array($server['spec'] ?? null) ? $server['spec'] : [];
+        if (! \array_key_exists('php_version', $spec) && \method_exists($project, 'phpVersion')
+            && \is_string($project->phpVersion()) && $project->phpVersion() !== '') {
+            $spec['php_version'] = $project->phpVersion();
+        }
+        $errors = $this->validateServerLifecycle([...$server, 'spec' => $spec]);
+        if ($errors !== []) {
+            throw new \RuntimeException(\implode('; ', $errors));
+        }
         $name = $this->managedServerName($project, $profile, $server);
         $credential = (int) ($spec['credential'] ?? ($spec['provider_id'] ?? ($spec['provider'] ?? 0)));
         $region = \is_string($spec['region'] ?? null) ? $spec['region'] : '';
@@ -1602,8 +1897,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     private function deleteProfileSiteAndDatabases(object $project, object $profile, int $serverId): bool
     {
         $domain = $this->profileDomain($profile);
-        foreach ($this->paginatedData($this->getClient()->server($serverId)->sites()) as $site) {
-            if (\property_exists($site, 'domain') && $site->domain === $domain && \property_exists($site, 'id')) {
+        foreach ($this->siteInventory($this->getClient()->server($serverId)->sites()) as $site) {
+            if (\property_exists($site, 'domain') && $this->domainsMatch($site->domain, $domain) && \property_exists($site, 'id')) {
                 return $this->deleteSiteAndDatabases($project, $profile, $serverId, (int) $site->id);
             }
         }
@@ -1613,9 +1908,16 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
     private function deleteSiteAndDatabases(object $project, object $profile, int $serverId, int $siteId): bool
     {
+        try {
+            $this->assertSiteOwnership($project, $profile, $serverId, $siteId);
+        } catch (\Throwable $exception) {
+            $this->lastError = $exception->getMessage();
+
+            return false;
+        }
         $server = $this->getClient()->server($serverId);
         $databaseErrors = [];
-        $databases = $this->paginatedData($server->databases());
+        $databases = $this->databaseInventory($server->databases());
 
         foreach ($this->projectDatabases($project) as $database) {
             $dbName = $this->interpolateDatabaseName(
@@ -1630,7 +1932,17 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 }
 
                 try {
-                    $server->databases((int) $existingDatabase->id)->delete();
+                    $this->assertDatabaseSiteAssociation($existingDatabase, $siteId, $dbName);
+                    [, $values] = $this->readSiteEnvironment($server->sites($siteId)->environment());
+                    $ownership = $values[$this->databaseOwnershipKey($dbName)] ?? null;
+                    $marker = $this->databaseOwnershipMarker($project, $profile, $dbName);
+                    if ($ownership === 'adopted:'.$marker) {
+                        break;
+                    }
+                    if ($ownership !== 'created:'.$marker) {
+                        throw new \RuntimeException("ownership state cannot be proven for database {$dbName}");
+                    }
+                    $this->deleteDatabaseAndVerify($server, (int) $existingDatabase->id, $dbName);
                 } catch (\Throwable $exception) {
                     $databaseErrors[] = "Failed to delete database {$dbName}: ".$exception->getMessage();
                 }
@@ -1638,12 +1950,15 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
         }
 
+        if ($databaseErrors !== []) {
+            $this->lastError = \implode("\n", $databaseErrors);
+
+            return false;
+        }
+
         try {
-            $response = $server->sites($siteId)->delete();
-            $message = $response->getJson()->message ?? null;
-            if (\is_string($message) && (\str_contains(\strtolower($message), 'error') || \str_contains(\strtolower($message), 'failed'))) {
-                $databaseErrors[] = 'Failed to delete site: '.$message;
-            }
+            $this->removeManagedWorkloads($server, $project, $profile);
+            $this->deleteSiteAndVerify($server, $siteId);
         } catch (\Throwable $exception) {
             $databaseErrors[] = "Failed to delete site {$siteId}: ".$exception->getMessage();
         }
@@ -1657,6 +1972,91 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         return true;
     }
 
+    private function deleteSiteAndVerify(object $server, int $id): void
+    {
+        $domain = null;
+        foreach ($this->siteInventory($server->sites()) as $site) {
+            if ($site->id === $id) $domain = $site->domain;
+        }
+        if ($domain === null) return;
+
+        $json = $server->sites($id)->delete()->getJson();
+        $message = $json->message ?? null;
+        if (! \is_object($json) || ($json->errors ?? []) !== []
+            || ! \in_array($json->error ?? null, [null, '', false], true)
+            || (\property_exists($json, 'success') && $json->success !== true)
+            || ! \is_string($message) || \trim($message) === ''
+            || \str_contains(\strtolower($message), 'error') || \str_contains(\strtolower($message), 'failed')) {
+            throw new \RuntimeException('Ploi site deletion returned an invalid or contradictory response.');
+        }
+        foreach ($this->siteInventory($server->sites()) as $site) {
+            if ($site->id === $id || \strcasecmp($site->domain, $domain) === 0) {
+                throw new \RuntimeException('Ploi site deletion remains unconfirmed; a matching identity is still visible. Recheck before retrying.');
+            }
+        }
+    }
+
+    private function deleteDatabaseAndVerify(object $server, int $id, string $name): void
+    {
+        // The documented successful database DELETE response has an empty body.
+        $json = $server->databases($id)->delete()->getJson();
+        if ($json !== null && (! \is_object($json) || ($json->errors ?? []) !== []
+            || ! \in_array($json->error ?? null, [null, '', false], true)
+            || (\property_exists($json, 'success') && $json->success !== true))) {
+            throw new \RuntimeException('Ploi database deletion returned an invalid or contradictory response.');
+        }
+        foreach ($this->databaseInventory($server->databases()) as $database) {
+            if ($this->positiveResourceId($database->id) === $id || $database->name === $name) {
+                throw new \RuntimeException('Ploi database deletion remains unconfirmed; a matching identity is still visible. Recheck before retrying.');
+            }
+        }
+    }
+
+    private function positiveResourceId(mixed $value): ?int
+    {
+        $id = (\is_int($value) || (\is_string($value) && \preg_match('/^[1-9][0-9]*$/D', $value) === 1))
+            ? \filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) : false;
+        return $id === false ? null : $id;
+    }
+
+    /** @return array<int, object> */
+    private function databaseInventory(object $resource): array
+    {
+        $databases = $this->paginatedData($resource);
+        $ids = [];
+        $names = [];
+        foreach ($databases as $database) {
+            $id = $this->positiveResourceId($database->id ?? null);
+            $name = $database->name ?? null;
+            if ($id === null || ! \is_string($name) || $name === '' || \trim($name) !== $name
+                || isset($ids[$id]) || isset($names[$name])) {
+                throw new \RuntimeException('Ploi database inventory contains an invalid or duplicate identity.');
+            }
+            $ids[$id] = true;
+            $names[$name] = true;
+        }
+        return $databases;
+    }
+
+    /** @return array<int, object> */
+    private function siteInventory(object $resource): array
+    {
+        $sites = $this->paginatedData($resource);
+        $ids = [];
+        $domains = [];
+        foreach ($sites as $site) {
+            $id = $site->id ?? null;
+            $domain = $site->domain ?? null;
+            if (! \is_int($id) || $id < 1 || ! \is_string($domain) || $domain === ''
+                || \trim($domain) !== $domain || isset($ids[$id]) || isset($domains[\strtolower($domain)])) {
+                throw new \RuntimeException('Ploi site inventory contains an invalid or duplicate identity.');
+            }
+            $ids[$id] = true;
+            $domains[\strtolower($domain)] = true;
+        }
+        return $sites;
+    }
+
     /** @return array<int, object> */
     private function paginatedData(object $resource): array
     {
@@ -1666,6 +2066,9 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
         $items = [];
         $page = 1;
+        $expectedLast = null;
+        $hasTotal = null;
+        $expectedTotal = null;
         do {
             $response = $resource->page($page, 50);
             if (! \is_object($response) || ! \method_exists($response, 'getJson')) {
@@ -1673,17 +2076,59 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
 
             $json = $response->getJson();
+            if (! \is_object($json) || ($json->errors ?? []) !== []
+                || ! \in_array($json->error ?? null, [null, '', false], true)
+                || (\property_exists($json, 'success') && $json->success !== true)) {
+                throw new \RuntimeException('Ploi returned an invalid or contradictory inventory response');
+            }
+
             $data = $json->data ?? null;
-            if (! \is_array($data)) {
+            if (! \is_array($data) || ! \array_is_list($data)) {
                 throw new \RuntimeException('Ploi returned invalid paginated resource data');
             }
 
-            $items = [...$items, ...\array_values(\array_filter($data, \is_object(...)))];
-            $lastPage = isset($json->meta->last_page) && \is_numeric($json->meta->last_page)
-                ? (int) $json->meta->last_page
-                : $page;
+            foreach ($data as $item) {
+                if (! \is_object($item)) {
+                    throw new \RuntimeException('Ploi returned an invalid paginated resource entry');
+                }
+            }
+            $rawLastPage = $json->meta->last_page ?? null;
+            $lastPage = (\is_int($rawLastPage) || \is_string($rawLastPage))
+                ? \filter_var($rawLastPage, FILTER_VALIDATE_INT, ['options' => ['min_range' => $page]]) : false;
+            if ($lastPage === false || ($expectedLast !== null && $lastPage !== $expectedLast)) {
+                throw new \RuntimeException('Ploi returned invalid pagination metadata');
+            }
+            $expectedLast = $lastPage;
+            $meta = $json->meta ?? null;
+            if (! \is_object($meta)) {
+                throw new \RuntimeException('Ploi returned invalid pagination metadata');
+            }
+            $reportsTotal = \property_exists($meta, 'total');
+            if ($hasTotal !== null && $hasTotal !== $reportsTotal) {
+                throw new \RuntimeException('Ploi returned changing pagination total metadata');
+            }
+            $hasTotal = $reportsTotal;
+            if ($reportsTotal) {
+                $total = (\is_int($meta->total) || \is_string($meta->total))
+                    ? \filter_var($meta->total, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]) : false;
+                if ($total === false || ($expectedTotal !== null && $total !== $expectedTotal)) {
+                    throw new \RuntimeException('Ploi returned invalid or changing pagination total metadata');
+                }
+                $expectedTotal = $total;
+            }
+            $currentPage = \property_exists($meta, 'current_page') ? $meta->current_page : $page;
+            if ((\is_int($currentPage) || \is_string($currentPage))
+                && \filter_var($currentPage, FILTER_VALIDATE_INT) === $page) {
+                $items = [...$items, ...$data];
+            } else {
+                throw new \RuntimeException('Ploi returned a different pagination page than requested');
+            }
             $page++;
         } while ($page <= $lastPage);
+
+        if ($expectedTotal !== null && \count($items) !== $expectedTotal) {
+            throw new \RuntimeException('Ploi returned an inventory that does not match its reported total');
+        }
 
         return $items;
     }
@@ -1710,6 +2155,88 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     /**
      * @param array{mode:string,id?:mixed,cleanup?:mixed,ttl?:mixed,spec?:array<string,mixed>} $server
      */
+    private function assertDatabaseSiteAssociation(object $database, int $siteId, string $name): void
+    {
+        $site = $database->site ?? null;
+        if (! \is_object($site) || ! \property_exists($site, 'id') || $this->positiveResourceId($site->id) !== $siteId) {
+            throw new \RuntimeException("Refusing to delete Ploi database {$name}: its association with site {$siteId} cannot be proven");
+        }
+    }
+
+    private function databaseOwnershipKey(string $name): string
+    {
+        return 'SHIPPERCLI_DATABASE_'.\strtoupper(\substr(\hash('sha256', $name), 0, 24));
+    }
+
+    private function databaseOwnershipMarker(object $project, object $profile, string $name): string
+    {
+        return \hash('sha256', \json_encode([$this->projectName($project), $this->profileName($profile), $name], JSON_THROW_ON_ERROR));
+    }
+
+    private function databaseAdoptionAuthorized(object $project, object $profile, string $name): bool
+    {
+        $entries = $this->profileValue($profile, 'ploi');
+        $entries = \is_array($entries) ? ($entries['adopt_existing_databases'] ?? []) : [];
+        if (! \is_array($entries)) throw new \InvalidArgumentException('Ploi adopt_existing_databases must be a list of exact project/profile/name identities.');
+        foreach ($entries as $entry) {
+            if (! \is_array($entry) || \array_diff(\array_keys($entry), ['project', 'profile', 'name']) !== []
+                || ! \is_string($entry['project'] ?? null) || ! \is_string($entry['profile'] ?? null)
+                || ! \is_string($entry['name'] ?? null)) {
+                throw new \InvalidArgumentException('Ploi adopt_existing_databases entries require only string project, profile, and name fields.');
+            }
+            if ($entry['project'] === $this->projectName($project)
+                && $entry['profile'] === $this->profileName($profile)
+                && $entry['name'] === $name) return true;
+        }
+        return false;
+    }
+
+    private function planDatabaseActions(array &$actions, object $server, int $siteId, object $project, object $profile): void
+    {
+        $inventory = $this->databaseInventory($server->databases());
+        [, $values] = $this->readSiteEnvironment($server->sites($siteId)->environment());
+        foreach ($this->projectDatabases($project) as $database) {
+            $name = $this->interpolateDatabaseName($this->databaseValue($database, 'name'), $this->projectName($project), $this->profileName($profile));
+            $state = $values[$this->databaseOwnershipKey($name)] ?? null;
+            $marker = $this->databaseOwnershipMarker($project, $profile, $name);
+            $exists = false;
+            foreach ($inventory as $item) {
+                if (($item->name ?? null) !== $name) continue;
+                $exists = true;
+                $this->assertDatabaseSiteAssociation($item, $siteId, $name);
+                if ($state === 'created:'.$marker || $state === 'adopted:'.$marker) {
+                    $actions[] = 'Reuse '.$state.' Ploi database: '.$name;
+                } elseif ($this->databaseAdoptionAuthorized($project, $profile, $name)) {
+                    $actions[] = 'Adopt existing Ploi database: '.$name.' (site '.$siteId.')';
+                } else {
+                    throw new \RuntimeException('A configured Ploi database requires exact-scope adoption consent.');
+                }
+                break;
+            }
+            if (! $exists) $actions[] = 'Create Ploi database: '.$name;
+        }
+    }
+
+    private function siteOwnershipMarker(object $project, object $profile): string
+    {
+        return \hash('sha256', \json_encode([
+            $this->projectName($project),
+            $this->profileName($profile),
+        ], JSON_THROW_ON_ERROR));
+    }
+
+    protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void
+    {
+        try {
+            [, $values] = $this->readSiteEnvironment($this->getClient()->server($serverId)->sites($siteId)->environment());
+        } catch (\Throwable) {
+            $values = [];
+        }
+        if (($values['SHIPPERCLI_OWNERSHIP'] ?? null) !== $this->siteOwnershipMarker($project, $profile)) {
+            throw new \RuntimeException("Refusing to modify Ploi site {$siteId}: matching Shipper ownership evidence is missing");
+        }
+    }
+
     private function managedServerName(object $project, object $profile, array $server): string
     {
         $prefix = self::MANAGED_SERVER_PREFIX.'-'.$this->slugify($this->projectName($project)).'-'.$this->slugify($this->profileName($profile));
