@@ -126,7 +126,25 @@ settings; this password option does not redirect the database connection.
 `database_host` defaults to `127.0.0.1`;
 override it for a different database endpoint. Re-apply preserves existing
 credentials without rotation; existing databases must already be linked to the
-site and their credentials available in the application environment.
+site and their credentials available in the application environment. New
+databases are recorded as Shipper-created in the site's environment. An
+existing database without matching lifecycle evidence is refused unless its
+exact resolved identity is listed for adoption in the profile:
+
+```yaml
+ploi:
+  adopt_existing_databases:
+    - project: api
+      profile: production
+      name: api_production
+```
+
+The resolved database name, project, and profile must all match. The read-only
+plan calls out each adoption. Adoption is then persisted as a site environment
+marker and destroy preserves adopted databases. Destroy only deletes databases
+marked as created for that exact project/profile/name. Older installs without
+database lifecycle markers fail closed during destroy; review the database
+before recording the appropriate marker through Ploi.
 
 ## Site ownership
 

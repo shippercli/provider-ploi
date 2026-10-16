@@ -214,25 +214,34 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $repoName = \is_string($repository['name'] ?? null) ? $repository['name'] : 'unknown';
 
         $blocked = null;
+        $siteIdForPlan = null;
         if ($serverId !== null) {
             try {
+                $siteForPlan = null;
                 foreach ($this->siteInventory($this->getClient()->server((int) $serverId)->sites()) as $candidate) {
                     if (! \is_string($candidate->domain ?? null) || ! \is_int($candidate->id ?? null) || $candidate->id < 1) {
                         throw new \RuntimeException('Ploi site inventory contains an invalid identity.');
                     }
                     if ($this->domainsMatch($candidate->domain, $domain)) {
                         $this->assertSiteOwnership($project, $profile, (int) $serverId, $candidate->id);
+                        $siteForPlan = $candidate;
+                        $siteIdForPlan = $candidate->id;
                     }
                 }
+                if ($siteForPlan !== null) {
+                    $this->planDatabaseActions($actions, $this->getClient()->server((int) $serverId), $siteIdForPlan, $project, $profile);
+                }
             } catch (\Throwable) {
-                $blocked = 'Unable to verify matching Ploi site ownership. Check API access and review the project/profile marker before deployment.';
+                $blocked = 'Unable to verify matching Ploi site and database ownership. Check API access and review the project/profile markers before deployment.';
             }
         }
 
-        $actions[] = 'Create or find site for domain: '.(\is_string($domain) ? $domain : '');
-        $actions[] = "Install repository: {$repoProvider}:{$repoName} ({$branch})";
+        if ($blocked === null) {
+            $actions[] = 'Create or find site for domain: '.(\is_string($domain) ? $domain : '');
+            $actions[] = "Install repository: {$repoProvider}:{$repoName} ({$branch})";
+        }
 
-        foreach ($this->projectDatabases($project) as $database) {
+        if ($serverId === null || $siteIdForPlan === null) foreach ($this->projectDatabases($project) as $database) {
             $dbName = $this->interpolateDatabaseName(
                 $this->databaseValue($database, 'name'),
                 $this->projectName($project),
@@ -545,6 +554,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             );
 
             $exists = false;
+            $prefix = $prefixes[$this->databaseValue($database, 'name')];
 
             foreach ($this->databaseInventory($server->databases()) as $db) {
                 if (\property_exists($db, 'name') && $db->name === $dbName) {
@@ -555,7 +565,6 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                         return false;
                     }
 
-                    $prefix = $prefixes[$this->databaseValue($database, 'name')];
                     try {
                         [, $existing] = $this->readSiteEnvironment($server->sites($siteId)->environment());
                         $available = [...$existing, ...$this->configuredEnvironment($project, $profile)];
@@ -571,6 +580,23 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                         $this->lastError = "Existing Ploi database {$dbName} requires matching {$prefix} connection settings and a password in the application environment.";
 
                         return false;
+                    }
+                    $stateKey = $this->databaseOwnershipKey($dbName);
+                    $scopeMarker = $this->databaseOwnershipMarker($project, $profile, $dbName);
+                    $storedState = $existing[$stateKey] ?? null;
+                    if ($storedState !== null && ! \in_array($storedState, ['created:'.$scopeMarker, 'adopted:'.$scopeMarker], true)) {
+                        $this->lastError = "Existing Ploi database {$dbName} has conflicting Shipper ownership evidence; review it before deployment.";
+
+                        return false;
+                    }
+                    if ($storedState === null) {
+                        if (! $this->databaseAdoptionAuthorized($project, $profile, $dbName)) {
+                            $this->lastError = "Existing Ploi database {$dbName} is not marked as Shipper-created; exact-scope adoption consent is required.";
+
+                            return false;
+                        }
+                        $this->generatedEnvironment[$stateKey] = 'adopted:'.$scopeMarker;
+                        $this->deliverDatabaseEnvironment($server, $siteId);
                     }
                     $exists = true;
                     break;
@@ -597,6 +623,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                 }
                 $prefix = $prefixes[$this->databaseValue($database, 'name')];
                 $this->generatedEnvironment = [...$this->generatedEnvironment,
+                    $this->databaseOwnershipKey($dbName) => 'created:'.$this->databaseOwnershipMarker($project, $profile, $dbName),
                     $prefix.'_HOST' => (string) ($this->config['database_host'] ?? '127.0.0.1'),
                     $prefix.'_DATABASE' => $dbName,
                     $prefix.'_USERNAME' => $dbUser,
@@ -1926,6 +1953,15 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
                 try {
                     $this->assertDatabaseSiteAssociation($existingDatabase, $siteId, $dbName);
+                    [, $values] = $this->readSiteEnvironment($server->sites($siteId)->environment());
+                    $ownership = $values[$this->databaseOwnershipKey($dbName)] ?? null;
+                    $marker = $this->databaseOwnershipMarker($project, $profile, $dbName);
+                    if ($ownership === 'adopted:'.$marker) {
+                        break;
+                    }
+                    if ($ownership !== 'created:'.$marker) {
+                        throw new \RuntimeException("ownership state cannot be proven for database {$dbName}");
+                    }
                     $this->deleteDatabaseAndVerify($server, (int) $existingDatabase->id, $dbName);
                 } catch (\Throwable $exception) {
                     $databaseErrors[] = "Failed to delete database {$dbName}: ".$exception->getMessage();
@@ -2143,6 +2179,60 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $site = $database->site ?? null;
         if (! \is_object($site) || ! \property_exists($site, 'id') || $this->positiveResourceId($site->id) !== $siteId) {
             throw new \RuntimeException("Refusing to delete Ploi database {$name}: its association with site {$siteId} cannot be proven");
+        }
+    }
+
+    private function databaseOwnershipKey(string $name): string
+    {
+        return 'SHIPPERCLI_DATABASE_'.\strtoupper(\substr(\hash('sha256', $name), 0, 24));
+    }
+
+    private function databaseOwnershipMarker(object $project, object $profile, string $name): string
+    {
+        return \hash('sha256', \json_encode([$this->projectName($project), $this->profileName($profile), $name], JSON_THROW_ON_ERROR));
+    }
+
+    private function databaseAdoptionAuthorized(object $project, object $profile, string $name): bool
+    {
+        $entries = $this->profileValue($profile, 'ploi');
+        $entries = \is_array($entries) ? ($entries['adopt_existing_databases'] ?? []) : [];
+        if (! \is_array($entries)) throw new \InvalidArgumentException('Ploi adopt_existing_databases must be a list of exact project/profile/name identities.');
+        foreach ($entries as $entry) {
+            if (! \is_array($entry) || \array_diff(\array_keys($entry), ['project', 'profile', 'name']) !== []
+                || ! \is_string($entry['project'] ?? null) || ! \is_string($entry['profile'] ?? null)
+                || ! \is_string($entry['name'] ?? null)) {
+                throw new \InvalidArgumentException('Ploi adopt_existing_databases entries require only string project, profile, and name fields.');
+            }
+            if ($entry['project'] === $this->projectName($project)
+                && $entry['profile'] === $this->profileName($profile)
+                && $entry['name'] === $name) return true;
+        }
+        return false;
+    }
+
+    private function planDatabaseActions(array &$actions, object $server, int $siteId, object $project, object $profile): void
+    {
+        $inventory = $this->databaseInventory($server->databases());
+        [, $values] = $this->readSiteEnvironment($server->sites($siteId)->environment());
+        foreach ($this->projectDatabases($project) as $database) {
+            $name = $this->interpolateDatabaseName($this->databaseValue($database, 'name'), $this->projectName($project), $this->profileName($profile));
+            $state = $values[$this->databaseOwnershipKey($name)] ?? null;
+            $marker = $this->databaseOwnershipMarker($project, $profile, $name);
+            $exists = false;
+            foreach ($inventory as $item) {
+                if (($item->name ?? null) !== $name) continue;
+                $exists = true;
+                $this->assertDatabaseSiteAssociation($item, $siteId, $name);
+                if ($state === 'created:'.$marker || $state === 'adopted:'.$marker) {
+                    $actions[] = 'Reuse '.$state.' Ploi database: '.$name;
+                } elseif ($this->databaseAdoptionAuthorized($project, $profile, $name)) {
+                    $actions[] = 'Adopt existing Ploi database: '.$name.' (site '.$siteId.')';
+                } else {
+                    throw new \RuntimeException('A configured Ploi database requires exact-scope adoption consent.');
+                }
+                break;
+            }
+            if (! $exists) $actions[] = 'Create Ploi database: '.$name;
         }
     }
 

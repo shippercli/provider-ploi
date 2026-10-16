@@ -55,7 +55,7 @@ test('ambiguous Ploi database mappings fail before database API calls', function
     (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), new stdClass);
 })->with([[[]], [['main' => 'DB', 'analytics' => 'DB']]])->throws(InvalidArgumentException::class);
 
-test('existing Ploi databases require available matching application credentials without rotation', function (string $content, bool $valid): void {
+test('unmarked existing Ploi databases require exact-scope adoption consent', function (string $content, bool $consent, bool $valid): void {
     $server = m::mock(Server::class);
     $databases = m::mock(Database::class);
     $site = m::mock(\Ploi\Resources\Site::class);
@@ -64,8 +64,19 @@ test('existing Ploi databases require available matching application credentials
     $databases->shouldReceive('page')->with(1, 50)->once()->andReturn($page);
     $databases->shouldNotReceive('create');
     $server->shouldReceive('databases')->once()->andReturn($databases);
-    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
-    $site->shouldReceive('environment->get->getJson')->once()->andReturn((object) ['data' => (object) ['content' => $content]]);
+    $server->shouldReceive('sites')->with(55)->zeroOrMoreTimes()->andReturn($site);
+    $stored = $content;
+    $environment = m::mock(\Ploi\Resources\Environment::class);
+    $site->shouldReceive('environment')->andReturn($environment);
+    $environment->shouldReceive('get')->andReturnUsing(function () use (&$stored): Response {
+        $response = m::mock(Response::class);
+        $response->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['content' => $stored]]);
+        return $response;
+    });
+    $environment->shouldReceive('update')->andReturnUsing(function (string $new) use (&$stored): Response {
+        $stored = $new;
+        return m::mock(Response::class);
+    });
     $project = new class {
         public function name(): string { return 'api'; }
         public function databases(): array { return [new class {
@@ -73,20 +84,38 @@ test('existing Ploi databases require available matching application credentials
             public function user(): string { return 'api'; }
         }]; }
     };
+    $profile = new class($consent) {
+        public function __construct(private bool $consent) {}
+        public function name(): string { return 'production'; }
+        public function get(string $key): mixed { return $key === 'ploi' && $this->consent ? ['adopt_existing_databases' => [['project' => 'api', 'profile' => 'production', 'name' => 'main']]] : null; }
+    };
     $provider = new PloiProvider;
-    $result = (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, $project, new stdClass);
+    $result = (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, $project, $profile);
     expect($result)->toBe($valid)
-        ->and((new ReflectionProperty($provider, 'generatedEnvironment'))->getValue($provider))->toBe([])
+        ->and($valid ? $stored : '')->toContain($valid ? 'adopted:' : '')
         ->and($provider->getLastError())->not->toContain('retained-secret');
 })->with([
-    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD='retained-secret'", true],
-    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api", false],
-    ["DB_HOST=127.0.0.1\nDB_DATABASE=other\nDB_USERNAME=api\nDB_PASSWORD=retained-secret", false],
-    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=''", false],
-    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=\"line one\nline two\"", true],
-    ["DB_PASSWORD=\"unterminated", false],
-    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=retained-secret\nBROKEN=\"unfinished", false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD='retained-secret'", false, false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD='retained-secret'", true, true],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api", true, false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=other\nDB_USERNAME=api\nDB_PASSWORD=retained-secret", true, false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=''", true, false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=\"line one\nline two\"", true, true],
+    ["DB_PASSWORD=\"unterminated", true, false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=retained-secret\nBROKEN=\"unfinished", true, false],
 ]);
+
+test('Ploi database lifecycle markers distinguish adopted from created resources', function (): void {
+    $provider = new PloiProvider;
+    $project = new class { public function name(): string { return 'api'; } };
+    $profile = new class { public function name(): string { return 'production'; } };
+    $marker = hash('sha256', json_encode(['api', 'production', 'main'], JSON_THROW_ON_ERROR));
+    $keyMethod = new ReflectionMethod($provider, 'databaseOwnershipKey');
+    $markerMethod = new ReflectionMethod($provider, 'databaseOwnershipMarker');
+    expect($keyMethod->invoke($provider, 'main'))->toBe('SHIPPERCLI_DATABASE_'.strtoupper(substr(hash('sha256', 'main'), 0, 24)))
+        ->and($markerMethod->invoke($provider, $project, $profile, 'main'))->toBe($marker)
+        ->and('adopted:'.$marker)->not->toBe('created:'.$marker);
+});
 
 
 test('database creation refuses unconfirmed identities before recording credentials', function (mixed $json): void {
@@ -241,6 +270,8 @@ test('confirmed Ploi credentials are stored before a later database creation fai
     $retryDatabases->shouldReceive('page')->twice()->andReturn($retryPage);
     $retryServer->shouldReceive('databases')->times(3)->andReturn($retryDatabases);
     ploiConnectionDeliveryFixture($retryServer, $stored);
+    $ownershipKey = 'SHIPPERCLI_DATABASE_'.strtoupper(substr(hash('sha256', 'main'), 0, 24));
+    $scopeMarker = hash('sha256', json_encode(['api', 'production', 'main'], JSON_THROW_ON_ERROR));
     $analyticsPassword = null;
     $retryDatabases->shouldReceive('create')->with('analytics', 'api_production_analytics', m::type('string'), null, 55)->once()
         ->andReturnUsing(function ($name, $user, $secret) use (&$analyticsPassword): Response {

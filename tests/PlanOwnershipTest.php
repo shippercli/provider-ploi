@@ -4,6 +4,7 @@ use Mockery as m;
 use Ploi\Ploi;
 use Ploi\Resources\Site;
 use Ploi\Resources\Server;
+use Ploi\Resources\Database;
 use ShipperCli\ProviderPloi\PloiProvider;
 
 test('existing-server plans verify ownership without writes', function (string $mode): void {
@@ -20,7 +21,7 @@ test('existing-server plans verify ownership without writes', function (string $
         $siteDomain = $mode === 'uppercase' ? 'preview.example.com' : ($mode === 'new' ? null : 'preview.example.com');
         $sites->shouldReceive('page->getJson')->andReturn((object) ['data' => $siteDomain === null ? [] : [(object) ['id' => 55, 'domain' => $siteDomain]], 'meta' => (object) ['last_page' => 1]]);
         if ($mode !== 'new') {
-            $server->shouldReceive('sites')->with(55)->once()->andReturn($sites);
+            $server->shouldReceive('sites')->with(55)->zeroOrMoreTimes()->andReturn($sites);
             $marker = hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR));
             $env = match ($mode) {
                 'owned' => 'SHIPPERCLI_OWNERSHIP='.$marker,
@@ -28,6 +29,12 @@ test('existing-server plans verify ownership without writes', function (string $
                 default => 'SHIPPERCLI_OWNERSHIP=another-scope',
             };
             $sites->shouldReceive('environment->get->getJson')->once()->andReturn((object) ['data' => (object) ['content' => $env]]);
+            if ($mode === 'owned') {
+                $dbs = m::mock(Database::class);
+                $server->shouldReceive('databases')->once()->andReturn($dbs);
+                $dbs->shouldReceive('page->getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
+                $sites->shouldReceive('environment->get->getJson')->once()->andReturn((object) ['data' => (object) ['content' => $env]]);
+            }
         }
     }
     $provider = new class($client) extends PloiProvider {

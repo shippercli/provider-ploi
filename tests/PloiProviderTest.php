@@ -867,6 +867,11 @@ test('unsafe database cleanup preserves the site', function (bool $associated): 
     $databases = m::mock(Database::class);
     $database = m::mock(Database::class);
     $site = m::mock(Site::class);
+    $environment = m::mock(Environment::class);
+    $site->shouldReceive('environment')->andReturn($environment);
+    $marker = hash('sha256', json_encode(['api', 'preview', 'api_preview'], JSON_THROW_ON_ERROR));
+    $key = 'SHIPPERCLI_DATABASE_'.strtoupper(substr(hash('sha256', 'api_preview'), 0, 24));
+    $environment->shouldReceive('get->getJson')->andReturn((object) ['data' => (object) ['content' => "{$key}=created:{$marker}"]]);
     $firstResponse = m::mock(Response::class);
     $secondResponse = m::mock(Response::class);
     $siteDeleteResponse = m::mock(Response::class);
@@ -887,9 +892,9 @@ test('unsafe database cleanup preserves the site', function (bool $associated): 
     } else {
         $database->shouldNotReceive('delete');
     }
+    $server->shouldReceive('sites')->with(55)->andReturn($site);
     $site->shouldNotReceive('delete');
     $server->shouldReceive('databases')->withNoArgs()->once()->andReturn($databases);
-    $server->shouldNotReceive('sites');
     $client->shouldReceive('server')->with(123)->once()->andReturn($server);
     $provider = new class($client, $lifecycleClient) extends PloiProvider
     {
