@@ -87,3 +87,22 @@ foreach (['absent', 'already-absent', 'visible', 'recreated', 'renamed', 'unread
     }
 }
 echo "Ten real HTTP site deletion verification cases passed\n";
+
+foreach (['get', 'post', 'patch', 'delete'] as $method) {
+    foreach (['null', 'number', 'boolean', 'string', 'array', 'records', 'syntax', 'utf8'] as $case) {
+        $failure = null;
+        try { $client->makeAPICall('json-shape-'.$case, $method); }
+        catch (Throwable $exception) { $failure = $exception; }
+        if (!$failure instanceof RuntimeException || $failure->getMessage() !== 'Ploi API returned invalid JSON.' || $failure->getPrevious() !== null) {
+            throw new RuntimeException('Invalid JSON response accepted or exposed: '.$method.'/'.$case);
+        }
+    }
+    if ($client->makeAPICall('json-shape-object', $method)->getJson()->data->accepted !== true) {
+        throw new RuntimeException('Valid JSON object changed');
+    }
+}
+if ($client->makeAPICall('json-shape-empty', 'delete')->getJson() !== null
+    || $client->makeAPICall('json-shape-empty204', 'post')->getJson() !== null) {
+    throw new RuntimeException('Empty success response compatibility changed');
+}
+echo "32 real HTTP invalid JSON checks and six valid controls passed\n";

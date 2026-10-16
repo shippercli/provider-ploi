@@ -292,3 +292,11 @@ report unconfirmed while asynchronous work is pending. It verifies account
 inventory absence at that point, not physical filesystem erasure or a transaction
 across site, database, workload and server cleanup. Live verification remains
 required.
+
+The protected API adapter validates nonempty successful response bodies as JSON
+objects before passing them to the SDK. Malformed JSON, invalid UTF-8, arrays,
+scalars, and JSON null fail with a fixed diagnostic and no chained payload
+exception. Empty DELETE bodies and HTTP 204 responses remain supported;
+resource-specific validation and absence checks still determine completion.
+Validated bytes are copied into a seekable stream so SDK decoding sees the same
+body even when the original transport stream cannot rewind.

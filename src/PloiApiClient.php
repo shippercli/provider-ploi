@@ -58,7 +58,19 @@ final class PloiApiClient extends Ploi
             };
             throw new $exception('Ploi API request failed (HTTP '.$status.').');
         }
-        $result = new Response($response);
+        $body = (string) $response->getBody();
+        if ($body !== '' || ($method !== 'delete' && $status !== 204)) {
+            try {
+                $decoded = \json_decode($body, false, 512, JSON_THROW_ON_ERROR);
+            } catch (\JsonException) {
+                throw new RuntimeException('Ploi API returned invalid JSON.');
+            }
+            if (! $decoded instanceof \stdClass) {
+                throw new RuntimeException('Ploi API returned invalid JSON.');
+            }
+        }
+        // Preserve the validated bytes even if the upstream body was not seekable.
+        $result = new Response($response->withBody(\GuzzleHttp\Psr7\Utils::streamFor($body)));
         if ($method === 'post' && $url === 'servers') {
             // The SDK sets a weakly typed integer resource ID before returning.
             $rawId = $result->getJson()->data->id ?? null;

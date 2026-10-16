@@ -59,3 +59,33 @@ it('keeps underlying transport error text out of diagnostics', function (): void
         ->and($failure->getMessage())->toContain('transport failed')->not->toContain('synthetic-secret')
         ->and($failure->getPrevious())->toBeNull();
 });
+
+it('rejects malformed or nonobject JSON before SDK decoding', function (string $body, string $method): void {
+    $stack = HandlerStack::create(new MockHandler([new Response(200, [], $body)]));
+    $sdk = new PloiApiClient('synthetic', new Client(['handler' => $stack]));
+    $failure = null;
+    try { $sdk->makeAPICall('fixture', $method); } catch (Throwable $exception) { $failure = $exception; }
+    expect($failure)->toBeInstanceOf(RuntimeException::class)
+        ->and($failure->getMessage())->toBe('Ploi API returned invalid JSON.')
+        ->and($failure->getPrevious())->toBeNull();
+})->with(['null', '42', 'true', '"synthetic-secret"', '[]', '[{"id":1}]', '{"error":"synthetic-secret"', '{"value":"'."\xff".'"}'])
+    ->with(['get', 'post', 'patch', 'delete']);
+
+it('preserves documented empty deletion bodies and HTTP no-content responses', function (string $method, int $status): void {
+    $stack = HandlerStack::create(new MockHandler([new Response($status)]));
+    $sdk = new PloiApiClient('synthetic', new Client(['handler' => $stack]));
+    expect($sdk->makeAPICall('fixture', $method)->getJson())->toBeNull();
+})->with([['delete', 200], ['delete', 204], ['post', 204], ['patch', 204]]);
+
+it('does not accept empty successful JSON reads', function (): void {
+    $stack = HandlerStack::create(new MockHandler([new Response(200)]));
+    $sdk = new PloiApiClient('synthetic', new Client(['handler' => $stack]));
+    expect(fn () => $sdk->makeAPICall('fixture'))->toThrow(RuntimeException::class, 'invalid JSON');
+});
+
+it('preserves validated nonseekable response bytes for SDK decoding', function (): void {
+    $body = new \GuzzleHttp\Psr7\NoSeekStream(\GuzzleHttp\Psr7\Utils::streamFor('{"data":{"id":123}}'));
+    $stack = HandlerStack::create(new MockHandler([new Response(200, [], $body)]));
+    $sdk = new PloiApiClient('synthetic', new Client(['handler' => $stack]));
+    expect($sdk->makeAPICall('fixture')->getJson()->data->id)->toBe(123);
+});

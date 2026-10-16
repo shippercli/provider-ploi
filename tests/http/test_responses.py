@@ -67,6 +67,14 @@ class ResponsesTest(unittest.TestCase):
                         'false': {'success': False}, 'string': {'success': 'true'},
                         'null': {'success': None}, 'valid': {'success': True, 'error': None, 'errors': []}}[case])
                     status, payload = 200, json.dumps(envelope).encode()
+                elif procedure.startswith('json-shape-'):
+                    case = procedure.removeprefix('json-shape-')
+                    status = 204 if case == 'empty204' else 200
+                    payload = {'null': b'null', 'number': b'42', 'boolean': b'true',
+                        'string': json.dumps(self.headers.get('Authorization', '')).encode(),
+                        'array': b'[]', 'records': b'[{"id":1}]', 'syntax': b'{"error":',
+                        'utf8': b'{"error":"' + bytes([255]) + b'"}',
+                        'object': b'{"data":{"accepted":true}}', 'empty': b'', 'empty204': b''}[case]
                 elif procedure.startswith('status-'):
                     _, status, format_ = procedure.split('-')
                     status = int(status)
@@ -87,6 +95,7 @@ class ResponsesTest(unittest.TestCase):
 
             do_GET = do_POST
             do_DELETE = do_POST
+            do_PATCH = do_POST
 
         with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -96,7 +105,7 @@ class ResponsesTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 112)
+                self.assertEqual(len(received), 150)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:
