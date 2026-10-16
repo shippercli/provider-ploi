@@ -225,3 +225,9 @@ provisioning merely because request fixtures or local type validation pass.
 References checked 2026-10-16:
 - <https://developers.ploi.io/databases/create-database>
 - <https://developers.ploi.io/servers/get-server>
+
+### Partial database provisioning
+
+After each confirmed database creation, the provider merges its connection variables into the site environment and reads them back before creating another database. Existing unrelated environment values are retained. A later creation failure therefore leaves earlier confirmed connection settings available for retry. An unreadable or malformed environment, failed write, or mismatching readback stops further provisioning with a fixed diagnostic.
+
+This is not an atomic multi-database operation. A database can still be created before its credentials are successfully stored, and an ambiguous creation response can leave an unconfirmed resource. There is no durable credential journal or automatic rollback; resolve these failures before retrying.

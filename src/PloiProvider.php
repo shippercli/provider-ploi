@@ -569,9 +569,37 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                     $prefix.'_USERNAME' => $dbUser,
                     $prefix.'_PASSWORD' => $password,
                 ];
+                $this->deliverDatabaseEnvironment($server, $siteId);
             }
         }
         return true;
+    }
+
+    private function deliverDatabaseEnvironment(object $server, int $siteId): void
+    {
+        try {
+            $environment = $server->sites($siteId)->environment();
+            $read = function () use ($environment): array {
+                $response = $environment->get()->getJson();
+                if (! \is_object($response) || ($response->errors ?? []) !== []
+                    || ! \in_array($response->error ?? null, [null, '', false], true)
+                    || (\property_exists($response, 'success') && $response->success !== true)
+                    || ! \is_string($response->data->content ?? null)) {
+                    throw new \RuntimeException('Unreadable environment.');
+                }
+                return [$response->data->content, $this->parseCompleteEnvironment($response->data->content)];
+            };
+            [$content] = $read();
+            $environment->update($this->mergeEnvironment($content, $this->generatedEnvironment));
+            [, $stored] = $read();
+            foreach ($this->generatedEnvironment as $key => $value) {
+                if (($stored[$key] ?? null) !== $value) {
+                    throw new \RuntimeException('Connection readback mismatch.');
+                }
+            }
+        } catch (\Throwable) {
+            throw new \RuntimeException('Ploi did not confirm storage of the created database connection; provisioning stopped.');
+        }
     }
 
     public function destroy(object $project, object $profile): bool

@@ -14,6 +14,7 @@ class ResponsesTest(unittest.TestCase):
         deletion_methods = []
         pending = [False]
         deleted_sites = set()
+        environments = {}
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_args):
@@ -23,7 +24,12 @@ class ResponsesTest(unittest.TestCase):
                 body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 received.append((self.path, self.headers.get('Authorization'), body))
                 procedure = self.path.rsplit('/', 1)[-1]
-                if self.path.split('?')[0] == '/servers/124/databases':
+                if self.path == '/servers/124/sites/55/env':
+                    case = self.headers['X-Fixture-Case']
+                    if self.command == 'PATCH':
+                        environments[case] = json.loads(body)['content']
+                    status, payload = 200, json.dumps({'data': {'content': environments.get(case, 'APP_ENV=production\n')}}).encode()
+                elif self.path.split('?')[0] == '/servers/124/databases':
                     case = self.headers['X-Fixture-Case']
                     if self.command == 'GET':
                         envelope = {'data': [], 'meta': {'last_page': 1}}
@@ -125,7 +131,7 @@ class ResponsesTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 168)
+                self.assertEqual(len(received), 177)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:

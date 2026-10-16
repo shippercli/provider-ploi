@@ -35,6 +35,8 @@ test('all new Ploi databases deliver distinct connection environments and retain
         return $created;
     });
     $server->shouldReceive('databases')->times(4)->andReturn($databases);
+    $stored = "APP_ENV=production\n";
+    ploiConnectionDeliveryFixture($server, $stored);
     $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
     (new ReflectionProperty($provider, 'generatedEnvironment'))->setValue($provider, ['SHIPPERCLI_OWNERSHIP' => 'retained-marker']);
     $profile = new class { public function name(): string { return 'production'; } };
@@ -170,6 +172,8 @@ test('explicit Ploi connection passwords reach creation and generated environmen
         return $response;
     });
     $server->shouldReceive('databases')->times(4)->andReturn($databases);
+    $stored = "APP_ENV=production\n";
+    ploiConnectionDeliveryFixture($server, $stored);
     $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
     expect((new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, $project, $profile))->toBeTrue();
     $environment = (new ReflectionProperty($provider, 'generatedEnvironment'))->getValue($provider);
@@ -195,3 +199,76 @@ test('invalid explicit Ploi passwords stop before provisioning any database', fu
     expect($provider->apply(ploiDatabaseProject(), $profile))->toBeFalse()
         ->and($provider->getLastError())->toBe('Deployment error: Explicit Ploi database passwords must be nonempty strings. (Type: InvalidArgumentException)');
 })->with([[''], [null], [false], [123]]);
+
+
+test('confirmed Ploi credentials are stored before a later database creation fails', function (): void {
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $page = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->twice()->andReturn($page);
+    $server->shouldReceive('databases')->times(4)->andReturn($databases);
+    $stored = "APP_ENV=production\n";
+    ploiConnectionDeliveryFixture($server, $stored);
+    $password = null;
+    $deliveredBeforeFailure = false;
+    $databases->shouldReceive('create')->with('main', 'api_production_main', m::type('string'), null, 55)->once()
+        ->andReturnUsing(function ($name, $user, $secret) use (&$password): Response {
+            $password = $secret;
+            $response = m::mock(Response::class);
+            $response->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['id' => 9, 'name' => $name]]);
+            return $response;
+        });
+    $databases->shouldReceive('create')->with('analytics', 'api_production_analytics', m::type('string'), null, 55)->once()
+        ->andReturnUsing(function () use (&$stored, &$password, &$deliveredBeforeFailure): never {
+            $deliveredBeforeFailure = (\Dotenv\Dotenv::parse($stored)['DB_PASSWORD'] ?? null) === $password;
+            throw new RuntimeException('Synthetic later creation failure');
+        });
+    $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    expect(fn () => (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), new class {
+        public function name(): string { return 'production'; }
+    }))->toThrow(RuntimeException::class, 'Ploi did not confirm the requested database creation identity.');
+    expect($deliveredBeforeFailure)->toBeTrue();
+    expect(\Dotenv\Dotenv::parse($stored))->toMatchArray(['APP_ENV' => 'production', 'DB_PASSWORD' => $password]);
+});
+
+function ploiConnectionDeliveryFixture(object $server, string &$stored, string $mode = 'valid'): void
+{
+    $site = m::mock(\Ploi\Resources\Site::class);
+    $environment = m::mock(\Ploi\Resources\Environment::class);
+    $server->shouldReceive('sites')->with(55)->andReturn($site);
+    $site->shouldReceive('environment')->andReturn($environment);
+    $environment->shouldReceive('get')->andReturnUsing(function () use (&$stored, $mode): Response {
+        $response = m::mock(Response::class);
+        $response->shouldReceive('getJson')->andReturn($mode === 'unreadable' ? (object) [] : (object) ['data' => (object) ['content' => $stored]]);
+        return $response;
+    });
+    $environment->shouldReceive('update')->andReturnUsing(function (string $content) use (&$stored, $mode): Response {
+        if ($mode === 'write-failure') {
+            throw new RuntimeException('synthetic-secret');
+        }
+        if ($mode !== 'ignored-write') {
+            $stored = $content;
+        }
+        return m::mock(Response::class);
+    });
+}
+
+
+test('Ploi connection delivery failure stops later database creation', function (string $mode): void {
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $page = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->once()->andReturn($page);
+    $server->shouldReceive('databases')->twice()->andReturn($databases);
+    $created = m::mock(Response::class);
+    $created->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['id' => 9, 'name' => 'main']]);
+    $databases->shouldReceive('create')->with('main', 'api_production_main', m::type('string'), null, 55)->once()->andReturn($created);
+    $stored = $mode === 'malformed' ? 'BROKEN="unfinished' : "APP_ENV=production\n";
+    ploiConnectionDeliveryFixture($server, $stored, $mode);
+    $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    expect(fn () => (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), new class {
+        public function name(): string { return 'production'; }
+    }))->toThrow(RuntimeException::class, 'Ploi did not confirm storage of the created database connection; provisioning stopped.');
+})->with(['unreadable', 'malformed', 'write-failure', 'ignored-write']);
