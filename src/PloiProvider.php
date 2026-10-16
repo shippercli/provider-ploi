@@ -61,7 +61,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             'env' => ['state' => 'supported'],
             'observability' => ['state' => 'partial', 'limitations' => ['Deployment and error logs are available, but application metrics are not exposed through the provider.']],
             'rollback' => ['state' => 'unsupported'],
-            'previews' => ['state' => 'partial', 'limitations' => ['Profiles can target preview domains, but automated preview lifecycle cleanup is not implemented.']],
+            'previews' => ['state' => 'partial', 'limitations' => ['The CLI orphan-cleanup flow removes owned preview sites, configured databases attached to those sites, and managed workloads when the profile is named preview and its domain contains ${GITHUB_PR_NUMBER}. Cleanup verifies ownership and database association; it does not clean up preview resources for arbitrary domain patterns.']],
         ];
     }
 

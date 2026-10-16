@@ -33,6 +33,8 @@ test('provider declares capability states explicitly', function (): void {
 
     expect($capabilities['app_deploy']['state'])->toBe('supported')
         ->and($capabilities['server_lifecycle']['state'])->toBe('partial')
+        ->and($capabilities['previews']['limitations'][0])->toContain('orphan-cleanup flow')
+        ->and($capabilities['previews']['limitations'][0])->toContain('${GITHUB_PR_NUMBER}')
         ->and($capabilities['background_workloads']['state'])->toBe('supported')
         ->and($capabilities['rollback']['state'])->toBe('unsupported');
 });
