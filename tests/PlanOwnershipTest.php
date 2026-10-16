@@ -17,7 +17,8 @@ test('existing-server plans verify ownership without writes', function (string $
     if ($mode === 'error') {
         $sites->shouldReceive('page')->once()->andThrow(new RuntimeException('sensitive error'));
     } else {
-        $sites->shouldReceive('page->getJson')->andReturn((object) ['data' => $mode === 'new' ? [] : [(object) ['id' => 55, 'domain' => 'preview.example.com']], 'meta' => (object) ['last_page' => 1]]);
+        $siteDomain = $mode === 'uppercase' ? 'preview.example.com' : ($mode === 'new' ? null : 'preview.example.com');
+        $sites->shouldReceive('page->getJson')->andReturn((object) ['data' => $siteDomain === null ? [] : [(object) ['id' => 55, 'domain' => $siteDomain]], 'meta' => (object) ['last_page' => 1]]);
         if ($mode !== 'new') {
             $server->shouldReceive('sites')->with(55)->once()->andReturn($sites);
             $marker = hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR));
@@ -34,9 +35,10 @@ test('existing-server plans verify ownership without writes', function (string $
         protected function getClient(): Ploi { return $this->fakeClient; }
     };
     $project = new class { public function name(): string { return 'api'; } };
-    $profile = new class {
+    $profile = new class($mode === 'uppercase' ? 'PREVIEW.EXAMPLE.COM' : 'preview.example.com') {
+        public function __construct(private string $domain) {}
         public function name(): string { return 'preview'; }
-        public function get(string $key): mixed { return $key === 'domain' ? 'preview.example.com' : null; }
+        public function get(string $key): mixed { return $key === 'domain' ? $this->domain : null; }
     };
     $plan = $provider->plan($project, $profile);
     expect($plan['blocked'])->toBe(! in_array($mode, ['new', 'owned'], true));
@@ -46,4 +48,4 @@ test('existing-server plans verify ownership without writes', function (string $
             ->not->toContain('sensitive error');
     }
     m::close();
-})->with(['new', 'owned', 'unowned', 'malformed', 'error']);
+})->with(['new', 'owned', 'uppercase', 'unowned', 'malformed', 'error']);

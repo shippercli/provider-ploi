@@ -220,7 +220,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                     if (! \is_string($candidate->domain ?? null) || ! \is_int($candidate->id ?? null) || $candidate->id < 1) {
                         throw new \RuntimeException('Ploi site inventory contains an invalid identity.');
                     }
-                    if ($candidate->domain === $domain) {
+                    if ($this->domainsMatch($candidate->domain, $domain)) {
                         $this->assertSiteOwnership($project, $profile, (int) $serverId, $candidate->id);
                     }
                 }
@@ -313,7 +313,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
             $existingSite = null;
             foreach ($this->siteInventory($server->sites()) as $site) {
-                if (\property_exists($site, 'domain') && $site->domain === $domain) {
+                if (\property_exists($site, 'domain') && $this->domainsMatch($site->domain, $domain)) {
                     $existingSite = $site;
                     break;
                 }
@@ -665,7 +665,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
             $existingSite = null;
             foreach ($this->siteInventory($server->sites()) as $site) {
-                if (\property_exists($site, 'domain') && $site->domain === $domain) {
+                if (\property_exists($site, 'domain') && $this->domainsMatch($site->domain, $domain)) {
                     $existingSite = $site;
                     break;
                 }
@@ -1643,12 +1643,18 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             if (! \is_string($site->domain ?? null) || ! \is_int($site->id ?? null) || $site->id < 1) {
                 throw new \RuntimeException('Ploi site inventory contains an invalid identity.');
             }
-            if ($site->domain === $domain) {
+            if ($this->domainsMatch($site->domain, $domain)) {
                 return $site;
             }
         }
 
         return null;
+    }
+
+    private function domainsMatch(mixed $first, mixed $second): bool
+    {
+        return \is_string($first) && \is_string($second)
+            && \strtolower($first) === \strtolower($second);
     }
 
     /** @return array<int, string> */
@@ -1885,7 +1891,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     {
         $domain = $this->profileDomain($profile);
         foreach ($this->siteInventory($this->getClient()->server($serverId)->sites()) as $site) {
-            if (\property_exists($site, 'domain') && $site->domain === $domain && \property_exists($site, 'id')) {
+            if (\property_exists($site, 'domain') && $this->domainsMatch($site->domain, $domain) && \property_exists($site, 'id')) {
                 return $this->deleteSiteAndDatabases($project, $profile, $serverId, (int) $site->id);
             }
         }
