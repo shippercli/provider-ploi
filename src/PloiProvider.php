@@ -68,6 +68,11 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     public function validate(object $project, object $profile): array
     {
         $errors = [];
+        try {
+            $this->databaseEnvironmentPrefixes($project);
+        } catch (\InvalidArgumentException $exception) {
+            $errors[] = $exception->getMessage();
+        }
 
         $apiKey = $this->config['api_key'] ?? null;
         if (! \is_string($apiKey) || $apiKey === '') {
@@ -318,45 +323,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $this->lastSiteId = $siteId;
             $this->generatedEnvironment = ['SHIPPERCLI_OWNERSHIP' => $this->siteOwnershipMarker($project, $profile)];
 
-            foreach ($this->projectDatabases($project) as $database) {
-                $dbName = $this->interpolateDatabaseName(
-                    $this->databaseValue($database, 'name'),
-                    $this->projectName($project),
-                    $this->profileName($profile),
-                );
-                $dbUser = $this->interpolateDatabaseName(
-                    $this->databaseValue($database, 'user'),
-                    $this->projectName($project),
-                    $this->profileName($profile),
-                );
-
-                $exists = false;
-
-                foreach ($this->paginatedData($server->databases()) as $db) {
-                    if (\property_exists($db, 'name') && $db->name === $dbName) {
-                        $linkedSite = $db->site ?? null;
-                        if (! \is_object($linkedSite) || ! \property_exists($linkedSite, 'id') || (int) $linkedSite->id !== $siteId) {
-                            $this->lastError = "Existing Ploi database {$dbName} is not attached to site {$siteId}; the Ploi API only accepts site_id when creating a database";
-
-                            return false;
-                        }
-
-                        $exists = true;
-                        break;
-                    }
-                }
-
-                if (! $exists) {
-                    $password = $this->generateDatabasePassword();
-                    $server->databases()->create($dbName, $dbUser, $password, null, $siteId);
-                    if (! isset($this->generatedEnvironment['DB_PASSWORD'])) {
-                        $this->generatedEnvironment = [...$this->generatedEnvironment,
-                            'DB_DATABASE' => $dbName,
-                            'DB_USERNAME' => $dbUser,
-                            'DB_PASSWORD' => $password,
-                        ];
-                    }
-                }
+            if (! $this->applyDatabases($server, $siteId, $project, $profile)) {
+                return false;
             }
 
             $configuration = $this->postApply($project, $profile);
@@ -421,6 +389,80 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
             return false;
         }
+    }
+
+    /** @return array<string, string> */
+    private function databaseEnvironmentPrefixes(object $project): array
+    {
+        $databases = $this->projectDatabases($project) !== []
+            ? $this->projectDatabases($project) : [];
+        $configured = $this->config['database_environment_prefixes'] ?? [];
+        if (! \is_array($configured)) {
+            throw new \InvalidArgumentException('Ploi database_environment_prefixes must be a map of database names to environment prefixes.');
+        }
+        $prefixes = [];
+        foreach ($databases as $database) {
+            if (! \is_object($database) || ! \method_exists($database, 'name')) {
+                throw new \InvalidArgumentException('Ploi database declarations require a name.');
+            }
+            $name = $database->name();
+            $prefix = $configured[$name] ?? (\count($databases) === 1 ? 'DB' : null);
+            if (! \is_string($prefix) || \preg_match('/\A[A-Z_][A-Z0-9_]*\z/', $prefix) !== 1) {
+                throw new \InvalidArgumentException("Ploi database {$name} requires a valid database_environment_prefixes entry when multiple databases are declared.");
+            }
+            if (isset($prefixes[$name]) || \in_array($prefix, $prefixes, true)) {
+                throw new \InvalidArgumentException('Ploi database names and environment prefixes must be unique.');
+            }
+            $prefixes[$name] = $prefix;
+        }
+
+        return $prefixes;
+    }
+
+    private function applyDatabases(object $server, int $siteId, object $project, object $profile): bool
+    {
+        $prefixes = $this->databaseEnvironmentPrefixes($project);
+        foreach ($this->projectDatabases($project) as $database) {
+            $dbName = $this->interpolateDatabaseName(
+                $this->databaseValue($database, 'name'),
+                $this->projectName($project),
+                $this->profileName($profile),
+            );
+            $dbUser = $this->interpolateDatabaseName(
+                $this->databaseValue($database, 'user'),
+                $this->projectName($project),
+                $this->profileName($profile),
+            );
+
+            $exists = false;
+
+            foreach ($this->paginatedData($server->databases()) as $db) {
+                if (\property_exists($db, 'name') && $db->name === $dbName) {
+                    $linkedSite = $db->site ?? null;
+                    if (! \is_object($linkedSite) || ! \property_exists($linkedSite, 'id') || (int) $linkedSite->id !== $siteId) {
+                        $this->lastError = "Existing Ploi database {$dbName} is not attached to site {$siteId}; the Ploi API only accepts site_id when creating a database";
+
+                        return false;
+                    }
+
+                    $exists = true;
+                    break;
+                }
+            }
+
+            if (! $exists) {
+                $password = $this->generateDatabasePassword();
+                $server->databases()->create($dbName, $dbUser, $password, null, $siteId);
+                $prefix = $prefixes[$this->databaseValue($database, 'name')];
+                $this->generatedEnvironment = [...$this->generatedEnvironment,
+                    $prefix.'_HOST' => (string) ($this->config['database_host'] ?? '127.0.0.1'),
+                    $prefix.'_DATABASE' => $dbName,
+                    $prefix.'_USERNAME' => $dbUser,
+                    $prefix.'_PASSWORD' => $password,
+                ];
+            }
+        }
+        return true;
     }
 
     public function destroy(object $project, object $profile): bool

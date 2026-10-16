@@ -101,6 +101,26 @@ projects:
 
 Created servers are marked as Shipper-managed using a deterministic managed name based on project, profile, and configured server name. Cleanup only deletes servers that match that managed identity.
 
+## Database connection environments
+
+A single new database exports `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, and
+`DB_PASSWORD`. Multiple databases require `database_environment_prefixes` in the
+provider configuration, keyed by each declared database name, for example:
+
+```yaml
+database_environment_prefixes:
+  main: DB
+  analytics: ANALYTICS_DB
+```
+
+The analytics connection uses `ANALYTICS_DB_HOST`, `ANALYTICS_DB_DATABASE`,
+`ANALYTICS_DB_USERNAME`, and `ANALYTICS_DB_PASSWORD`. Prefixes must be unique
+uppercase environment identifiers. Configure the application to read them.
+Passwords are generated independently. `database_host` defaults to `127.0.0.1`;
+override it for a different database endpoint. Re-apply preserves existing
+credentials without rotation; existing databases must already be linked to the
+site and their credentials available in the application environment.
+
 ## Site ownership
 
 New deployments persist `SHIPPERCLI_OWNERSHIP` in the site's environment. Its
