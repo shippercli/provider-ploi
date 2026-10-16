@@ -256,3 +256,13 @@ acknowledgment without explicit errors before polling begins. Missing or failed
 acknowledgments stop the local flow. This response only acknowledges a start;
 it does not prove completion, and an ambiguous response does not prove that the
 remote deployment failed to start. Inspect remote state before retrying.
+
+### Status output privacy
+
+Status includes only provider/server identifiers and a site summary containing
+`id`, `domain` and observed `status`. It no longer returns the raw Ploi site
+resource, which may contain deployment scripts, environment or repository details.
+Consumers depending on arbitrary nested site fields must use the documented
+summary instead. A site's existence is not proof of deployment: absent sites are
+`not_found`, while missing/malformed status is `unknown`. An observed state does
+not uniquely identify completion of the deployment just triggered.

@@ -810,12 +810,19 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         $site = $this->findSite($serverId, $this->profileDomain($profile));
+        $observed = $site->status ?? null;
+        $state = $site === null ? 'not_found' : (\is_string($observed)
+            && \preg_match('/\A[a-z][a-z0-9_-]{0,63}\z/i', $observed) === 1 ? $observed : 'unknown');
 
         return [
             'provider' => 'ploi',
-            'state' => $site === null ? 'server_ready' : 'deployed',
+            'state' => $state,
             'server_id' => $serverId,
-            'site' => $site,
+            'site' => $site === null ? null : (object) [
+                'id' => $this->positiveResourceId($site->id ?? null),
+                'domain' => $site->domain,
+                'status' => $state,
+            ],
         ];
     }
 

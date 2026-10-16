@@ -255,3 +255,21 @@ foreach (['valid', 'false', 'errors', 'missing'] as $case) {
     }
 }
 echo "Four real SDK deployment trigger acknowledgment controls passed\n";
+
+
+foreach (['active', 'failed', 'missing', 'invalid', 'absent'] as $case) {
+    $api = new PloiApiClient('synthetic-authorization-secret', new Client(['base_uri' => $argv[1].'/',
+        'headers' => ['X-Fixture-Case' => 'status-privacy-'.$case]]));
+    $provider = new class($api) extends \ShipperCli\ProviderPloi\PloiProvider {
+        public function __construct(private \Ploi\Ploi $client) { parent::__construct(['server_id' => 129]); }
+        protected function getClient(): \Ploi\Ploi { return $this->client; }
+    };
+    $profile = new class { public function get(string $key): mixed { return $key === 'domain' ? 'fixture.test' : null; } };
+    $status = $provider->status(new stdClass, $profile);
+    $expected = ['active' => 'active', 'failed' => 'deploy-failed', 'absent' => 'not_found'][$case] ?? 'unknown';
+    if ($status['state'] !== $expected || str_contains(json_encode($status), 'synthetic-status-secret')
+        || ($status['site'] !== null && array_keys(get_object_vars($status['site'])) !== ['id', 'domain', 'status'])) {
+        throw new RuntimeException('Ploi status exposed raw site data or invented deployment success');
+    }
+}
+echo "Five public status privacy/state real SDK scenarios passed\n";

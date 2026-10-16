@@ -25,7 +25,7 @@ test('status resolves later-page sites and refuses unreadable site inventories',
     $profile = new class { public function get(string $key): mixed { return $key === 'domain' ? 'preview.example.com' : null; } };
     if ($mode === 'valid') {
         $status = $provider->status(new stdClass, $profile);
-        expect($status['state'])->toBe('deployed')->and($status['site']->id)->toBe(55);
+        expect($status['state'])->toBe('unknown')->and($status['site']->id)->toBe(55);
     } else {
         expect(fn () => $provider->status(new stdClass, $profile))->toThrow(RuntimeException::class);
     }

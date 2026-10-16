@@ -28,7 +28,18 @@ class ResponsesTest(unittest.TestCase):
                 body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 received.append((self.path, self.headers.get('Authorization'), body))
                 procedure = self.path.rsplit('/', 1)[-1]
-                if self.path == '/servers/128/sites/55/deploy':
+                if self.path.split('?')[0] in ['/servers/129', '/servers/129/sites']:
+                    case = self.headers['X-Fixture-Case'].removeprefix('status-privacy-')
+                    if self.path == '/servers/129':
+                        envelope = {'data': {'id': 129, 'status': 'active'}}
+                    else:
+                        site = {'id': 55, 'domain': 'fixture.test', 'env': 'DB_PASSWORD=synthetic-status-secret', 'deploy_script': 'echo synthetic-status-secret'}
+                        if case == 'active': site['status'] = 'active'
+                        if case == 'failed': site['status'] = 'deploy-failed'
+                        if case == 'invalid': site['status'] = False
+                        envelope = {'data': [] if case == 'absent' else [site], 'meta': {'last_page': 1}}
+                    status, payload = 200, json.dumps(envelope).encode()
+                elif self.path == '/servers/128/sites/55/deploy':
                     case = self.headers['X-Fixture-Case'].removeprefix('trigger-')
                     envelope = {'message': 'Deployment has been started'}
                     if case == 'false': envelope['success'] = False
@@ -185,7 +196,7 @@ class ResponsesTest(unittest.TestCase):
                 self.assertEqual(partial_events, ['create:main', 'deliver', 'create:analytics', 'create:analytics', 'deliver'])
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 214)
+                self.assertEqual(len(received), 224)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:
