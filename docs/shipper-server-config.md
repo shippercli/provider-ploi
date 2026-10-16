@@ -277,3 +277,18 @@ observation, not physical erasure, backup deletion, or a transaction with site
 cleanup. No automatic second DELETE is sent by this verification.
 
 API reference: https://developers.ploi.io/databases/delete-database
+
+Site deletion now reads a validated inventory before mutation and again after
+an acknowledgement. A missing target needs no DELETE. For a present target,
+cleanup requires a nonempty message without explicit errors and a fresh read
+showing neither the old ID nor its domain (case-insensitive). Invalid responses,
+unreadable inventories, a retained ID, or a recreated domain stop cleanup and
+prevent the create-mode flow from proceeding to server cleanup. Error messages
+are fixed diagnostics rather than echoed API text. The documented response is
+an object with a `message`: https://developers.ploi.io/sites/delete-site
+
+This performs one post-delete observation, does not resend DELETE, and can
+report unconfirmed while asynchronous work is pending. It verifies account
+inventory absence at that point, not physical filesystem erasure or a transaction
+across site, database, workload and server cleanup. Live verification remains
+required.

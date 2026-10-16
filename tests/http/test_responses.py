@@ -13,6 +13,7 @@ class ResponsesTest(unittest.TestCase):
         redirected = []
         deletion_methods = []
         pending = [False]
+        deleted_sites = set()
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_args):
@@ -31,6 +32,22 @@ class ResponsesTest(unittest.TestCase):
                         status, payload = 404, b'{}'
                     else:
                         status, payload = 200, b'{"data":{"id":7,"status":"active"}}'
+                elif self.path.split('?')[0].startswith('/servers/123/sites'):
+                    case = self.headers['X-Fixture-Case']
+                    if self.command == 'DELETE':
+                        deleted_sites.add(case)
+                        envelope = {'error': {'message': 'Deleted', 'errors': [self.headers.get('Authorization', '')]},
+                            'false': {'message': 'Deleted', 'success': False}, 'missing-message': {},
+                            'failed-message': {'message': 'failed ' + self.headers.get('Authorization', '')}}.get(case, {'message': 'Site has been deleted'})
+                    else:
+                        if case not in deleted_sites:
+                            data = [] if case == 'already-absent' else [{'id': 55, 'domain': 'fixture.test'}]
+                        else:
+                            data = {'visible': [{'id': 55, 'domain': 'fixture.test'}],
+                                'recreated': [{'id': 56, 'domain': 'FIXTURE.test'}],
+                                'renamed': [{'id': 55, 'domain': 'other.test'}]}.get(case, [])
+                        envelope = {} if case == 'unreadable' and case in deleted_sites else {'data': data, 'meta': {'last_page': 1}}
+                    status, payload = 200, json.dumps(envelope).encode()
                 elif self.path.split('?')[0].startswith('/servers/123/databases'):
                     case = self.headers['X-Fixture-Case']
                     if self.command == 'DELETE':
@@ -79,7 +96,7 @@ class ResponsesTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 88)
+                self.assertEqual(len(received), 112)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:

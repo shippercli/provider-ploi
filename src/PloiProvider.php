@@ -569,16 +569,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             }
 
             $this->removeManagedWorkloads($server, $project, $profile);
-            $response = $server->sites($siteId)->delete();
-            $message = $response->getJson()->message ?? null;
-            if (\is_string($message)) {
-                $messageLower = \strtolower($message);
-                if (\str_contains($messageLower, 'error') || \str_contains($messageLower, 'failed')) {
-                    $this->lastError = 'Failed to delete site: '.$message;
-
-                    return false;
-                }
-            }
+            $this->deleteSiteAndVerify($server, $siteId);
 
             return true;
         } catch (\Throwable $e) {
@@ -1793,11 +1784,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         try {
-            $response = $server->sites($siteId)->delete();
-            $message = $response->getJson()->message ?? null;
-            if (\is_string($message) && (\str_contains(\strtolower($message), 'error') || \str_contains(\strtolower($message), 'failed'))) {
-                $databaseErrors[] = 'Failed to delete site: '.$message;
-            }
+            $this->deleteSiteAndVerify($server, $siteId);
         } catch (\Throwable $exception) {
             $databaseErrors[] = "Failed to delete site {$siteId}: ".$exception->getMessage();
         }
@@ -1809,6 +1796,30 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         return true;
+    }
+
+    private function deleteSiteAndVerify(object $server, int $id): void
+    {
+        $domain = null;
+        foreach ($this->siteInventory($server->sites()) as $site) {
+            if ($site->id === $id) $domain = $site->domain;
+        }
+        if ($domain === null) return;
+
+        $json = $server->sites($id)->delete()->getJson();
+        $message = $json->message ?? null;
+        if (! \is_object($json) || ($json->errors ?? []) !== []
+            || ! \in_array($json->error ?? null, [null, '', false], true)
+            || (\property_exists($json, 'success') && $json->success !== true)
+            || ! \is_string($message) || \trim($message) === ''
+            || \str_contains(\strtolower($message), 'error') || \str_contains(\strtolower($message), 'failed')) {
+            throw new \RuntimeException('Ploi site deletion returned an invalid or contradictory response.');
+        }
+        foreach ($this->siteInventory($server->sites()) as $site) {
+            if ($site->id === $id || \strcasecmp($site->domain, $domain) === 0) {
+                throw new \RuntimeException('Ploi site deletion remains unconfirmed; a matching identity is still visible. Recheck before retrying.');
+            }
+        }
     }
 
     private function deleteDatabaseAndVerify(object $server, int $id, string $name): void

@@ -70,3 +70,20 @@ foreach (['absent', 'visible', 'recreated', 'renamed', 'unreadable', 'error'] as
     }
 }
 echo "Six real HTTP database deletion verification cases passed\n";
+
+foreach (['absent', 'already-absent', 'visible', 'recreated', 'renamed', 'unreadable', 'error', 'false', 'missing-message', 'failed-message'] as $case) {
+    $api = new PloiApiClient('synthetic-authorization-secret', new Client(['base_uri' => $argv[1].'/',
+        'headers' => ['X-Fixture-Case' => $case]]));
+    $failure = null;
+    try {
+        (new ReflectionMethod(\ShipperCli\ProviderPloi\PloiProvider::class, 'deleteSiteAndVerify'))
+            ->invoke(new \ShipperCli\ProviderPloi\PloiProvider, $api->server(123), 55);
+    } catch (RuntimeException $exception) { $failure = $exception; }
+    if (in_array($case, ['absent', 'already-absent'], true) !== ($failure === null)) {
+        throw new RuntimeException('Invalid site deletion verification: '.$case);
+    }
+    if ($failure !== null && str_contains($failure->getMessage(), 'synthetic-authorization-secret')) {
+        throw new RuntimeException('Site deletion failure echoed credentials');
+    }
+}
+echo "Ten real HTTP site deletion verification cases passed\n";

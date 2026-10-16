@@ -394,10 +394,9 @@ test('provider package deletes managed created server on destroy cleanup', funct
         ],
         'meta' => (object) ['last_page' => 1],
     ]);
-    $siteListResponse->shouldReceive('getJson')->andReturn((object) [
-        'data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']],
-        'meta' => (object) ['last_page' => 1],
-    ]);
+    $present = (object) ['data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']], 'meta' => (object) ['last_page' => 1]];
+    $siteListResponse->shouldReceive('getJson')->andReturn($present, $present,
+        (object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
     $databaseListResponse->shouldReceive('getJson')->andReturn((object) [
         'data' => [],
         'meta' => (object) ['last_page' => 1],
@@ -408,10 +407,10 @@ test('provider package deletes managed created server on destroy cleanup', funct
     ]);
 
     $listResource->shouldReceive('page')->with(1, 50)->twice()->andReturn($listResponse);
-    $siteCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($siteListResponse);
+    $siteCollection->shouldReceive('page')->with(1, 50)->times(3)->andReturn($siteListResponse);
     $databaseCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($databaseListResponse);
     $siteResource->shouldReceive('delete')->once()->andReturn($siteDeleteResponse);
-    $serverResource->shouldReceive('sites')->withNoArgs()->once()->andReturn($siteCollection);
+    $serverResource->shouldReceive('sites')->withNoArgs()->times(3)->andReturn($siteCollection);
     $serverResource->shouldReceive('databases')->withNoArgs()->once()->andReturn($databaseCollection);
     $serverResource->shouldReceive('sites')->with(55)->once()->andReturn($siteResource);
     $serverResource->shouldReceive('delete')->once()->andReturn($deleteResponse);
@@ -955,19 +954,18 @@ test('create-mode retain cleanup deletes the profile site but retains the server
     $siteListResponse = m::mock(Response::class);
     $databaseListResponse = m::mock(Response::class);
     $siteDeleteResponse = m::mock(Response::class);
-    $siteListResponse->shouldReceive('getJson')->andReturn((object) [
-        'data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']],
-        'meta' => (object) ['last_page' => 1],
-    ]);
+    $present = (object) ['data' => [(object) ['id' => 55, 'domain' => 'preview.example.com']], 'meta' => (object) ['last_page' => 1]];
+    $siteListResponse->shouldReceive('getJson')->andReturn($present, $present,
+        (object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
     $databaseListResponse->shouldReceive('getJson')->andReturn((object) [
         'data' => [],
         'meta' => (object) ['last_page' => 1],
     ]);
     $siteDeleteResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Site deleted']);
-    $siteCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($siteListResponse);
+    $siteCollection->shouldReceive('page')->with(1, 50)->times(3)->andReturn($siteListResponse);
     $databaseCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($databaseListResponse);
     $site->shouldReceive('delete')->once()->andReturn($siteDeleteResponse);
-    $server->shouldReceive('sites')->withNoArgs()->once()->andReturn($siteCollection);
+    $server->shouldReceive('sites')->withNoArgs()->times(3)->andReturn($siteCollection);
     $server->shouldReceive('databases')->withNoArgs()->once()->andReturn($databaseCollection);
     $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
     $server->shouldNotReceive('delete');

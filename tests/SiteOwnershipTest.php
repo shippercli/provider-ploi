@@ -19,6 +19,12 @@ test('site cleanup requires ownership of the exact project and profile', functio
         $databases->shouldReceive('page->getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
         $server->shouldReceive('databases')->once()->andReturn($databases);
         $site->shouldReceive('delete->getJson')->once()->andReturn((object) ['message' => 'Deleted']);
+        $collection = m::mock(Site::class);
+        $server->shouldReceive('sites')->withNoArgs()->twice()->andReturn($collection);
+        $collection->shouldReceive('page->getJson')->andReturn(
+            (object) ['data' => [(object) ['id' => 55, 'domain' => 'fixture.test']], 'meta' => (object) ['last_page' => 1]],
+            (object) ['data' => [], 'meta' => (object) ['last_page' => 1]],
+        );
     } else {
         $server->shouldNotReceive('databases');
         $site->shouldNotReceive('delete');
