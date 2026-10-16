@@ -458,10 +458,10 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
 
             $exists = false;
 
-            foreach ($this->paginatedData($server->databases()) as $db) {
+            foreach ($this->databaseInventory($server->databases()) as $db) {
                 if (\property_exists($db, 'name') && $db->name === $dbName) {
                     $linkedSite = $db->site ?? null;
-                    if (! \is_object($linkedSite) || ! \property_exists($linkedSite, 'id') || (int) $linkedSite->id !== $siteId) {
+                    if (! \is_object($linkedSite) || ! \property_exists($linkedSite, 'id') || $this->positiveResourceId($linkedSite->id) !== $siteId) {
                         $this->lastError = "Existing Ploi database {$dbName} is not attached to site {$siteId}; the Ploi API only accepts site_id when creating a database";
 
                         return false;
@@ -553,7 +553,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                     $this->projectName($project),
                     $this->profileName($profile),
                 );
-                foreach ($this->paginatedData($server->databases()) as $db) {
+                foreach ($this->databaseInventory($server->databases()) as $db) {
                     if (\property_exists($db, 'name') && $db->name === $dbName && \property_exists($db, 'id')) {
                         $this->assertDatabaseSiteAssociation($db, $siteId, $dbName);
                         try {
@@ -1762,7 +1762,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
         $server = $this->getClient()->server($serverId);
         $databaseErrors = [];
-        $databases = $this->paginatedData($server->databases());
+        $databases = $this->databaseInventory($server->databases());
 
         foreach ($this->projectDatabases($project) as $database) {
             $dbName = $this->interpolateDatabaseName(
@@ -1809,6 +1809,32 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         return true;
+    }
+
+    private function positiveResourceId(mixed $value): ?int
+    {
+        $id = (\is_int($value) || (\is_string($value) && \preg_match('/^[1-9][0-9]*$/D', $value) === 1))
+            ? \filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) : false;
+        return $id === false ? null : $id;
+    }
+
+    /** @return array<int, object> */
+    private function databaseInventory(object $resource): array
+    {
+        $databases = $this->paginatedData($resource);
+        $ids = [];
+        $names = [];
+        foreach ($databases as $database) {
+            $id = $this->positiveResourceId($database->id ?? null);
+            $name = $database->name ?? null;
+            if ($id === null || ! \is_string($name) || $name === '' || \trim($name) !== $name
+                || isset($ids[$id]) || isset($names[$name])) {
+                throw new \RuntimeException('Ploi database inventory contains an invalid or duplicate identity.');
+            }
+            $ids[$id] = true;
+            $names[$name] = true;
+        }
+        return $databases;
     }
 
     /** @return array<int, object> */
@@ -1931,7 +1957,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
     private function assertDatabaseSiteAssociation(object $database, int $siteId, string $name): void
     {
         $site = $database->site ?? null;
-        if (! \is_object($site) || ! \property_exists($site, 'id') || (int) $site->id !== $siteId) {
+        if (! \is_object($site) || ! \property_exists($site, 'id') || $this->positiveResourceId($site->id) !== $siteId) {
             throw new \RuntimeException("Refusing to delete Ploi database {$name}: its association with site {$siteId} cannot be proven");
         }
     }

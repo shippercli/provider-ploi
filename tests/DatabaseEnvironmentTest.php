@@ -57,7 +57,7 @@ test('existing Ploi databases require available matching application credentials
     $databases = m::mock(Database::class);
     $site = m::mock(\Ploi\Resources\Site::class);
     $page = m::mock(Response::class);
-    $page->shouldReceive('getJson')->andReturn((object) ['data' => [(object) ['name' => 'main', 'site' => (object) ['id' => 55]]], 'meta' => (object) ['last_page' => 1]]);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [(object) ['id' => 9, 'name' => 'main', 'site' => (object) ['id' => 55]]], 'meta' => (object) ['last_page' => 1]]);
     $databases->shouldReceive('page')->with(1, 50)->once()->andReturn($page);
     $databases->shouldNotReceive('create');
     $server->shouldReceive('databases')->once()->andReturn($databases);

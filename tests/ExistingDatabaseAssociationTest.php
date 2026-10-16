@@ -11,7 +11,7 @@ use Ploi\Resources\Server;
 use Ploi\Resources\Site;
 use ShipperCli\ProviderPloi\PloiProvider;
 
-test('apply fails closed when an existing database belongs to another site', function (): void {
+test('apply fails closed when an existing database site association cannot be proven', function (mixed $linkedId): void {
     $client = m::mock(Ploi::class);
     $server = m::mock(Server::class);
     $sites = m::mock(Site::class);
@@ -33,7 +33,7 @@ test('apply fails closed when an existing database belongs to another site', fun
         'data' => [(object) [
             'id' => 9,
             'name' => 'api_preview',
-            'site' => (object) ['id' => 999],
+            'site' => (object) ['id' => $linkedId],
         ]],
         'meta' => (object) ['last_page' => 1],
     ]);
@@ -116,7 +116,7 @@ test('apply fails closed when an existing database belongs to another site', fun
 
     expect($provider->apply($project, $profile))->toBeFalse()
         ->and($provider->getLastError())->toContain('Existing Ploi database api_preview is not attached to site 55');
-});
+})->with([999, '55junk', 55.9, '55.9', '5.5e1', ' 55', '055']);
 
 test('apply refuses an unmanaged or differently scoped Ploi site before mutations', function (string $content): void {
     $client = m::mock(Ploi::class);

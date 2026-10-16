@@ -258,3 +258,10 @@ planning and execution. Apply, status, site listing, and cleanup use this same
 check, so an early domain match cannot hide a later invalid or duplicate record.
 These observations do not establish independent ownership or prevent a change
 between discovery and a later mutation; the ownership marker is still required.
+
+Database discovery also validates all record IDs and names before selecting a
+match; duplicate IDs/names or missing identities block reuse and cleanup. Site
+association IDs must be positive integers or canonical decimal strings matching
+the site exactly. Fractions, exponents, whitespace and trailing text are not
+coerced into an ownership match. This does not add an existing-database attach
+operation: the API association limitation described above still applies.
