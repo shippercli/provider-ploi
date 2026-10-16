@@ -15,6 +15,9 @@ class ResponsesTest(unittest.TestCase):
         pending = [False]
         deleted_sites = set()
         environments = {}
+        partial_databases = []
+        partial_events = []
+        partial_attempts = [0]
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_args):
@@ -24,7 +27,29 @@ class ResponsesTest(unittest.TestCase):
                 body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 received.append((self.path, self.headers.get('Authorization'), body))
                 procedure = self.path.rsplit('/', 1)[-1]
-                if self.path == '/servers/124/sites/55/env':
+                if self.path == '/servers/125/sites/55/env':
+                    if self.command == 'PATCH':
+                        environments['partial'] = json.loads(body)['content']
+                        partial_events.append('deliver')
+                    status, payload = 200, json.dumps({'data': {'content': environments.get('partial', 'APP_ENV=production\n')}}).encode()
+                elif self.path.split('?')[0] == '/servers/125/databases':
+                    status = 200
+                    if self.command == 'GET':
+                        envelope = {'data': partial_databases, 'meta': {'last_page': 1}}
+                    else:
+                        request = json.loads(body)
+                        name = request['name']
+                        partial_events.append('create:' + name)
+                        if name == 'analytics':
+                            partial_attempts[0] += 1
+                        if name == 'analytics' and partial_attempts[0] == 1:
+                            status, envelope = 500, {'message': 'Synthetic creation failure'}
+                        else:
+                            record = {'id': len(partial_databases) + 1, 'name': name, 'site': {'id': 55}}
+                            partial_databases.append(record)
+                            envelope = {'data': record}
+                    payload = json.dumps(envelope).encode()
+                elif self.path == '/servers/124/sites/55/env':
                     case = self.headers['X-Fixture-Case']
                     if self.command == 'PATCH':
                         environments[case] = json.loads(body)['content']
@@ -129,9 +154,10 @@ class ResponsesTest(unittest.TestCase):
             try:
                 result = subprocess.run(['php', str(Path(__file__).with_name('verify-responses.php')), f'http://127.0.0.1:{server.server_port}'], capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(partial_events, ['create:main', 'deliver', 'create:analytics', 'create:analytics', 'deliver'])
                 self.assertEqual(redirected, [])
                 self.assertEqual(deletion_methods, ['GET', 'DELETE', 'GET'])
-                self.assertEqual(len(received), 177)
+                self.assertEqual(len(received), 192)
                 self.assertTrue(all(auth == 'Bearer synthetic-authorization-secret' for _, auth, _ in received))
                 self.assertEqual(sum(b'synthetic-body-secret' in body for _, _, body in received), 30)
             finally:

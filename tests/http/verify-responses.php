@@ -146,3 +146,38 @@ foreach (['valid', 'valid-site', 'valid-explicit', 'wrong-name', 'bad-id', 'wron
     }
 }
 echo "Nine real HTTP database creation identity cases passed\n";
+
+
+$api = new PloiApiClient('synthetic-authorization-secret', new Client(['base_uri' => $argv[1].'/']));
+$project = new class {
+    public function name(): string { return 'fixture'; }
+    public function databases(): array {
+        return array_map(static fn ($name) => new class($name) {
+            public function __construct(private string $name) {}
+            public function name(): string { return $this->name; }
+            public function user(): string { return 'fixture_user'; }
+        }, ['main', 'analytics']);
+    }
+};
+$config = ['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']];
+$provider = new \ShipperCli\ProviderPloi\PloiProvider($config);
+$failure = null;
+try {
+    (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $api->server(125), 55, $project, new stdClass);
+} catch (RuntimeException $error) { $failure = $error; }
+$first = (new ReflectionProperty($provider, 'generatedEnvironment'))->getValue($provider);
+if ($failure === null || empty($first['DB_PASSWORD'])) {
+    throw new RuntimeException('Expected partial provisioning failure');
+}
+$retry = new \ShipperCli\ProviderPloi\PloiProvider($config);
+if (!(new ReflectionMethod($retry, 'applyDatabases'))->invoke($retry, $api->server(125), 55, $project, new stdClass)) {
+    throw new RuntimeException('Fresh retry rejected retained credentials');
+}
+$stored = \Dotenv\Dotenv::parse($api->server(125)->sites(55)->environment()->get()->getJson()->data->content);
+$second = (new ReflectionProperty($retry, 'generatedEnvironment'))->getValue($retry);
+if (($stored['DB_PASSWORD'] ?? null) !== $first['DB_PASSWORD']
+    || ($stored['ANALYTICS_DB_PASSWORD'] ?? null) !== ($second['ANALYTICS_DB_PASSWORD'] ?? null)
+    || empty($stored['ANALYTICS_DB_PASSWORD']) || ($stored['APP_ENV'] ?? null) !== 'production') {
+    throw new RuntimeException('Partial provisioning retry changed or lost connection settings');
+}
+echo "Real SDK partial provisioning and fresh retry passed\n";

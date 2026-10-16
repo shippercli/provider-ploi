@@ -230,6 +230,34 @@ test('confirmed Ploi credentials are stored before a later database creation fai
     }))->toThrow(RuntimeException::class, 'Ploi did not confirm the requested database creation identity.');
     expect($deliveredBeforeFailure)->toBeTrue();
     expect(\Dotenv\Dotenv::parse($stored))->toMatchArray(['APP_ENV' => 'production', 'DB_PASSWORD' => $password]);
+
+    // Retry with a new provider and inventory containing the successful first creation.
+    $retryServer = m::mock(Server::class);
+    $retryDatabases = m::mock(Database::class);
+    $retryPage = m::mock(Response::class);
+    $retryPage->shouldReceive('getJson')->andReturn((object) ['data' => [(object) [
+        'id' => 9, 'name' => 'main', 'site' => (object) ['id' => 55],
+    ]], 'meta' => (object) ['last_page' => 1]]);
+    $retryDatabases->shouldReceive('page')->twice()->andReturn($retryPage);
+    $retryServer->shouldReceive('databases')->times(3)->andReturn($retryDatabases);
+    ploiConnectionDeliveryFixture($retryServer, $stored);
+    $analyticsPassword = null;
+    $retryDatabases->shouldReceive('create')->with('analytics', 'api_production_analytics', m::type('string'), null, 55)->once()
+        ->andReturnUsing(function ($name, $user, $secret) use (&$analyticsPassword): Response {
+            $analyticsPassword = $secret;
+            $response = m::mock(Response::class);
+            $response->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['id' => 10, 'name' => $name]]);
+            return $response;
+        });
+    $retry = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    expect((new ReflectionMethod($retry, 'applyDatabases'))->invoke($retry, $retryServer, 55, ploiDatabaseProject(), new class {
+        public function name(): string { return 'production'; }
+    }))->toBeTrue();
+    expect(\Dotenv\Dotenv::parse($stored))->toMatchArray([
+        'APP_ENV' => 'production', 'DB_DATABASE' => 'main', 'DB_USERNAME' => 'api_production_main',
+        'DB_PASSWORD' => $password, 'ANALYTICS_DB_DATABASE' => 'analytics',
+        'ANALYTICS_DB_PASSWORD' => $analyticsPassword,
+    ]);
 });
 
 function ploiConnectionDeliveryFixture(object $server, string &$stored, string $mode = 'valid'): void
