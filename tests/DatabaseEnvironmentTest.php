@@ -300,3 +300,40 @@ test('Ploi connection delivery failure stops later database creation', function 
         public function name(): string { return 'production'; }
     }))->toThrow(RuntimeException::class, 'Ploi did not confirm storage of the created database connection; provisioning stopped.');
 })->with(['unreadable', 'malformed', 'write-failure', 'ignored-write']);
+
+
+test('configured credentials cannot mask an unreadable Ploi environment', function (mixed $json): void {
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $page = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [(object) [
+        'id' => 9, 'name' => 'main', 'site' => (object) ['id' => 55],
+    ]], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->once()->andReturn($page);
+    $databases->shouldNotReceive('create');
+    $server->shouldReceive('databases')->once()->andReturn($databases);
+    $site = m::mock(\Ploi\Resources\Site::class);
+    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $site->shouldReceive('environment->get->getJson')->once()->andReturn($json);
+    $project = new class {
+        public function name(): string { return 'api'; }
+        public function databases(): array { return [new class {
+            public function name(): string { return 'main'; }
+            public function user(): string { return 'api'; }
+        }]; }
+        public function environment(): object { return new class {
+            public function variables(): array { return [
+                'DB_HOST' => '127.0.0.1', 'DB_DATABASE' => 'main',
+                'DB_USERNAME' => 'api', 'DB_PASSWORD' => 'configured-secret',
+            ]; }
+        }; }
+    };
+    $provider = new PloiProvider;
+    expect((new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, $project, new stdClass))->toBeFalse();
+    expect($provider->getLastError())->not->toContain('configured-secret');
+})->with([
+    [null], [(object) []], [(object) ['data' => (object) ['content' => null]]],
+    [(object) ['data' => (object) ['content' => 123]]],
+    [(object) ['success' => false, 'data' => (object) ['content' => '']]],
+    [(object) ['errors' => ['synthetic-secret'], 'data' => (object) ['content' => '']]],
+]);

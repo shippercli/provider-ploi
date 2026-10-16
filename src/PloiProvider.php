@@ -523,9 +523,9 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                     }
 
                     $prefix = $prefixes[$this->databaseValue($database, 'name')];
-                    $content = $server->sites($siteId)->environment()->get()->getJson()->data->content ?? '';
                     try {
-                        $available = [...$this->parseCompleteEnvironment(\is_string($content) ? $content : ''), ...$this->configuredEnvironment($project, $profile)];
+                        [, $existing] = $this->readDatabaseEnvironment($server->sites($siteId)->environment());
+                        $available = [...$existing, ...$this->configuredEnvironment($project, $profile)];
                     } catch (\Throwable) {
                         $this->lastError = 'Cannot parse the existing Ploi site environment; review its connection settings before reusing a database.';
 
@@ -575,23 +575,27 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         return true;
     }
 
+    /** @return array{string, array<string, string>} */
+    private function readDatabaseEnvironment(object $environment): array
+    {
+        $response = $environment->get()->getJson();
+        if (! \is_object($response) || ($response->errors ?? []) !== []
+            || ! \in_array($response->error ?? null, [null, '', false], true)
+            || (\property_exists($response, 'success') && $response->success !== true)
+            || ! \is_string($response->data->content ?? null)) {
+            throw new \RuntimeException('Unreadable Ploi database environment.');
+        }
+
+        return [$response->data->content, $this->parseCompleteEnvironment($response->data->content)];
+    }
+
     private function deliverDatabaseEnvironment(object $server, int $siteId): void
     {
         try {
             $environment = $server->sites($siteId)->environment();
-            $read = function () use ($environment): array {
-                $response = $environment->get()->getJson();
-                if (! \is_object($response) || ($response->errors ?? []) !== []
-                    || ! \in_array($response->error ?? null, [null, '', false], true)
-                    || (\property_exists($response, 'success') && $response->success !== true)
-                    || ! \is_string($response->data->content ?? null)) {
-                    throw new \RuntimeException('Unreadable environment.');
-                }
-                return [$response->data->content, $this->parseCompleteEnvironment($response->data->content)];
-            };
-            [$content] = $read();
+            [$content] = $this->readDatabaseEnvironment($environment);
             $environment->update($this->mergeEnvironment($content, $this->generatedEnvironment));
-            [, $stored] = $read();
+            [, $stored] = $this->readDatabaseEnvironment($environment);
             foreach ($this->generatedEnvironment as $key => $value) {
                 if (($stored[$key] ?? null) !== $value) {
                     throw new \RuntimeException('Connection readback mismatch.');
