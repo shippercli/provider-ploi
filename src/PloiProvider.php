@@ -737,17 +737,18 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         }
 
         $operations = [
-            $this->applyAliases($profile),
-            $this->applyDeployScript($project, $profile),
-            $this->applyEnvironment($project, $profile),
-            $this->applySsl($project, $profile),
-            $this->applyPhpVersion($project),
-            $this->applyNginxConfig($project),
-            $this->applyRedirects($project),
-            $this->applyNetworkRules($project, $profile),
+            fn (): array => $this->applyAliases($profile),
+            fn (): array => $this->applyDeployScript($project, $profile),
+            fn (): array => $this->applyEnvironment($project, $profile),
+            fn (): array => $this->applySsl($project, $profile),
+            fn (): array => $this->applyPhpVersion($project),
+            fn (): array => $this->applyNginxConfig($project),
+            fn (): array => $this->applyRedirects($project),
+            fn (): array => $this->applyNetworkRules($project, $profile),
         ];
 
-        foreach ($operations as $operation) {
+        foreach ($operations as $run) {
+            $operation = $run();
             if (! ($operation['success'] ?? false)) {
                 $message = $operation['message'] ?? 'Ploi post-apply configuration failed';
 
