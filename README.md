@@ -206,3 +206,22 @@ file is rejected even if valid credentials appear earlier; phpdotenv otherwise
 silently drops that unfinished value. Complete multiline passwords remain
 supported. The internal completeness probe is removed from parsed values.
 The same completeness check applies before trusting the site ownership marker.
+
+### Database declaration types and engine verification
+
+Database declarations accept `mysql`, `mariadb`, and PostgreSQL aliases
+`postgres`, `postgresql`, `pgsql`. Other types fail local validation before API
+access; the SQL database operation cannot provision Redis, SQLite or MongoDB.
+These accepted labels do not select or change the server's installed engine.
+
+The published create-database operation accepts name, user, password, description
+and site_id, with no per-database engine selector. Its response reports a type.
+The documented get-server response shows mysql_version but no general engine
+identifier. Reliable verification that a declaration matches an existing server
+remains open pending a documented metadata contract or an authorized live-account
+check. This provider must not be treated as having verified cross-engine
+provisioning merely because request fixtures or local type validation pass.
+
+References checked 2026-10-16:
+- <https://developers.ploi.io/databases/create-database>
+- <https://developers.ploi.io/servers/get-server>

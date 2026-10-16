@@ -433,6 +433,10 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             if (! \is_object($database) || ! \method_exists($database, 'name')) {
                 throw new \InvalidArgumentException('Ploi database declarations require a name.');
             }
+            $type = \method_exists($database, 'type') ? $database->type() : 'mysql';
+            if (! \in_array($type, ['mysql', 'mariadb', 'postgres', 'postgresql', 'pgsql'], true)) {
+                throw new \InvalidArgumentException('Ploi database declarations require mysql, mariadb or PostgreSQL.');
+            }
             $name = $database->name();
             $prefix = $configured[$name] ?? (\count($databases) === 1 ? 'DB' : null);
             if (! \is_string($prefix) || \preg_match('/\A[A-Z_][A-Z0-9_]*\z/', $prefix) !== 1) {
