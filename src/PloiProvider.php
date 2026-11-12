@@ -675,7 +675,8 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             $serverConfig = $this->extractServerLifecycle($profile);
             if ($serverConfig !== null && ($serverConfig['mode'] ?? null) === 'create') {
                 $serverId = $this->resolveServerIdForProfile($project, $profile);
-                if ($serverId > 0 && ! $this->deleteProfileSiteAndDatabases($project, $profile, $serverId)) {
+                $removeServer = ($serverConfig['cleanup'] ?? null) === 'destroy';
+                if ($serverId > 0 && ! $this->deleteProfileSiteAndDatabases($project, $profile, $serverId, $removeServer)) {
                     return false;
                 }
 
@@ -1879,6 +1880,13 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $managedName = $this->managedServerName($project, $profile, $server);
         $serverId = $this->findServerIdByName($managedName);
         if ($serverId !== null) {
+            $serverClient = $this->getClient()->server($serverId);
+            if ($this->databaseInventory($serverClient->databases()) !== []) {
+                $this->lastError = 'Refusing to destroy Ploi server while databases remain.';
+
+                return false;
+            }
+
             $this->getServerLifecycleClient()->delete($serverId);
 
             return true;
@@ -1894,19 +1902,19 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         return true;
     }
 
-    private function deleteProfileSiteAndDatabases(object $project, object $profile, int $serverId): bool
+    private function deleteProfileSiteAndDatabases(object $project, object $profile, int $serverId, bool $removeServer): bool
     {
         $domain = $this->profileDomain($profile);
         foreach ($this->siteInventory($this->getClient()->server($serverId)->sites()) as $site) {
             if (\property_exists($site, 'domain') && $this->domainsMatch($site->domain, $domain) && \property_exists($site, 'id')) {
-                return $this->deleteSiteAndDatabases($project, $profile, $serverId, (int) $site->id);
+                return $this->deleteSiteAndDatabases($project, $profile, $serverId, (int) $site->id, $removeServer);
             }
         }
 
         return true;
     }
 
-    private function deleteSiteAndDatabases(object $project, object $profile, int $serverId, int $siteId): bool
+    private function deleteSiteAndDatabases(object $project, object $profile, int $serverId, int $siteId, bool $removeServer = false): bool
     {
         try {
             $this->assertSiteOwnership($project, $profile, $serverId, $siteId);
@@ -1918,6 +1926,7 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
         $server = $this->getClient()->server($serverId);
         $databaseErrors = [];
         $databases = $this->databaseInventory($server->databases());
+        $deletions = [];
 
         foreach ($this->projectDatabases($project) as $database) {
             $dbName = $this->interpolateDatabaseName(
@@ -1937,12 +1946,12 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
                     $ownership = $values[$this->databaseOwnershipKey($dbName)] ?? null;
                     $marker = $this->databaseOwnershipMarker($project, $profile, $dbName);
                     if ($ownership === 'adopted:'.$marker) {
-                        break;
+                        throw new \RuntimeException("database {$dbName} is adopted and must be retained");
                     }
                     if ($ownership !== 'created:'.$marker) {
                         throw new \RuntimeException("ownership state cannot be proven for database {$dbName}");
                     }
-                    $this->deleteDatabaseAndVerify($server, (int) $existingDatabase->id, $dbName);
+                    $deletions[(int) $existingDatabase->id] = $dbName;
                 } catch (\Throwable $exception) {
                     $databaseErrors[] = "Failed to delete database {$dbName}: ".$exception->getMessage();
                 }
@@ -1956,8 +1965,32 @@ class PloiProvider implements DeploymentLogsProviderInterface, DeploymentProvide
             return false;
         }
 
+        foreach ($databases as $existingDatabase) {
+            if (! isset($deletions[(int) $existingDatabase->id])
+                && ($removeServer || (string) ($existingDatabase->site->id ?? '') === (string) $siteId)) {
+                $this->lastError = 'Refusing Ploi cleanup because a database outside its ownership scope would be affected.';
+
+                return false;
+            }
+        }
+
+        foreach ($deletions as $databaseId => $databaseName) {
+            try {
+                $this->deleteDatabaseAndVerify($server, $databaseId, $databaseName);
+            } catch (\Throwable $exception) {
+                $this->lastError = "Failed to delete database {$databaseName}: ".$exception->getMessage();
+
+                return false;
+            }
+        }
+
         try {
             $this->removeManagedWorkloads($server, $project, $profile);
+            foreach ($this->databaseInventory($server->databases()) as $database) {
+                if ((string) ($database->site->id ?? '') === (string) $siteId) {
+                    throw new \RuntimeException('A database is still attached to the Ploi site.');
+                }
+            }
             $this->deleteSiteAndVerify($server, $siteId);
         } catch (\Throwable $exception) {
             $databaseErrors[] = "Failed to delete site {$siteId}: ".$exception->getMessage();

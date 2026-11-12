@@ -410,10 +410,10 @@ test('provider package deletes managed created server on destroy cleanup', funct
 
     $listResource->shouldReceive('page')->with(1, 50)->twice()->andReturn($listResponse);
     $siteCollection->shouldReceive('page')->with(1, 50)->times(3)->andReturn($siteListResponse);
-    $databaseCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($databaseListResponse);
+    $databaseCollection->shouldReceive('page')->with(1, 50)->times(3)->andReturn($databaseListResponse);
     $siteResource->shouldReceive('delete')->once()->andReturn($siteDeleteResponse);
     $serverResource->shouldReceive('sites')->withNoArgs()->times(3)->andReturn($siteCollection);
-    $serverResource->shouldReceive('databases')->withNoArgs()->once()->andReturn($databaseCollection);
+    $serverResource->shouldReceive('databases')->withNoArgs()->times(3)->andReturn($databaseCollection);
     $serverResource->shouldReceive('sites')->with(55)->once()->andReturn($siteResource);
     $serverResource->shouldReceive('delete')->once()->andReturn($deleteResponse);
     $beforeDelete = m::mock(Response::class);
@@ -425,7 +425,7 @@ test('provider package deletes managed created server on destroy cleanup', funct
     });
 
     $client->shouldReceive('server')->withNoArgs()->twice()->andReturn($listResource);
-    $client->shouldReceive('server')->with(999)->times(5)->andReturn($serverResource);
+    $client->shouldReceive('server')->with(999)->times(6)->andReturn($serverResource);
 
     $provider = new class($client) extends PloiProvider
     {
@@ -970,10 +970,10 @@ test('create-mode retain cleanup deletes the profile site but retains the server
     ]);
     $siteDeleteResponse->shouldReceive('getJson')->andReturn((object) ['message' => 'Site deleted']);
     $siteCollection->shouldReceive('page')->with(1, 50)->times(3)->andReturn($siteListResponse);
-    $databaseCollection->shouldReceive('page')->with(1, 50)->once()->andReturn($databaseListResponse);
+    $databaseCollection->shouldReceive('page')->with(1, 50)->twice()->andReturn($databaseListResponse);
     $site->shouldReceive('delete')->once()->andReturn($siteDeleteResponse);
     $server->shouldReceive('sites')->withNoArgs()->times(3)->andReturn($siteCollection);
-    $server->shouldReceive('databases')->withNoArgs()->once()->andReturn($databaseCollection);
+    $server->shouldReceive('databases')->withNoArgs()->twice()->andReturn($databaseCollection);
     $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
     $server->shouldNotReceive('delete');
     $client->shouldReceive('server')->with(999)->twice()->andReturn($server);

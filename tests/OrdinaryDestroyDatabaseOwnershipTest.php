@@ -11,7 +11,7 @@ use Ploi\Resources\Server;
 use Ploi\Resources\Site;
 use ShipperCli\ProviderPloi\PloiProvider;
 
-test('ordinary destroy preserves adopted databases and refuses databases without ownership evidence', function (string $ownership, bool $expected, bool $deleteDatabase): void {
+test('destroy protects adopted databases and refuses databases without ownership evidence', function (string $ownership, bool $expected, bool $deleteDatabase, bool $managedServer = false): void {
     $project = new class
     {
         public function name(): string { return 'api'; }
@@ -24,8 +24,18 @@ test('ordinary destroy preserves adopted databases and refuses databases without
             }];
         }
     };
-    $profile = new class
+    $profile = new class($managedServer)
     {
+        public function __construct(private readonly bool $managedServer) {}
+        public function server(): ?object
+        {
+            return $this->managedServer ? new class
+            {
+                public function mode(): string { return 'create'; }
+                public function cleanup(): string { return 'destroy'; }
+            } : null;
+        }
+
         public function name(): string { return 'production'; }
         public function get(string $key): mixed { return $key === 'domain' ? 'app.example.test' : null; }
     };
@@ -64,7 +74,7 @@ test('ordinary destroy preserves adopted databases and refuses databases without
         'data' => [],
         'meta' => (object) ['last_page' => 1],
     ]);
-    $databases->shouldReceive('page')->with(1, 50)->times($deleteDatabase ? 2 : 1)
+    $databases->shouldReceive('page')->with(1, 50)->times($deleteDatabase ? 3 : 1)
         ->andReturn($databasePresent, $databaseAbsent);
     if ($deleteDatabase) {
         $databaseDelete = m::mock(Response::class);
@@ -85,7 +95,7 @@ test('ordinary destroy preserves adopted databases and refuses databases without
     $site->shouldReceive('environment')->once()->andReturn($environment);
     $server->shouldReceive('sites')->withNoArgs()->times($expected ? 3 : 1)->andReturn($sites);
     $server->shouldReceive('sites')->with(55)->times($expected ? 2 : 1)->andReturn($site);
-    $server->shouldReceive('databases')->withNoArgs()->times($deleteDatabase ? 2 : 1)->andReturn($databases);
+    $server->shouldReceive('databases')->withNoArgs()->times($deleteDatabase ? 3 : 1)->andReturn($databases);
     $client->shouldReceive('server')->with(123)->twice()->andReturn($server);
 
     $provider = new class(['api_key' => 'token', 'server_id' => 123], $client) extends PloiProvider
@@ -97,6 +107,11 @@ test('ordinary destroy preserves adopted databases and refuses databases without
 
         protected function assertSiteOwnership(object $project, object $profile, int $serverId, int $siteId): void {}
 
+        protected function resolveServerIdForProfile(object $project, object $profile, bool $createIfMissing = false): int
+        {
+            return 123;
+        }
+
         protected function getClient(): Ploi
         {
             return $this->fakeClient;
@@ -105,10 +120,11 @@ test('ordinary destroy preserves adopted databases and refuses databases without
 
     expect($provider->destroy($project, $profile))->toBe($expected);
     if (! $expected) {
-        expect($provider->getLastError())->toContain('ownership state cannot be proven');
+        expect($provider->getLastError())->toContain($ownership === 'adopted' ? 'must be retained' : 'ownership state cannot be proven');
     }
 })->with([
-    ['adopted', true, false],
+    ['adopted', false, false],
+    ['adopted', false, false, true],
     ['missing', false, false],
     ['created', true, true],
 ]);

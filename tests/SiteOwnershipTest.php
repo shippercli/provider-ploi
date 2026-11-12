@@ -17,7 +17,7 @@ test('site cleanup requires ownership of the exact project and profile', functio
     if ($owned) {
         $databases = m::mock(Database::class);
         $databases->shouldReceive('page->getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
-        $server->shouldReceive('databases')->once()->andReturn($databases);
+        $server->shouldReceive('databases')->twice()->andReturn($databases);
         $site->shouldReceive('delete->getJson')->once()->andReturn((object) ['message' => 'Deleted']);
         $collection = m::mock(Site::class);
         $server->shouldReceive('sites')->withNoArgs()->twice()->andReturn($collection);

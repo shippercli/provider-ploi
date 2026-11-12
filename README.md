@@ -145,7 +145,9 @@ ploi:
 
 The resolved database name, project, and profile must all match. The read-only
 plan calls out each adoption. Adoption is then persisted as a site environment
-marker and destroy preserves adopted databases. Destroy only deletes databases
+marker. Destroy refuses to remove a site with an attached adopted database.
+Managed-server destroy also checks for any remaining database before deleting the server.
+Destroy only deletes databases
 marked as created for that exact project/profile/name. Older installs without
 database lifecycle markers fail closed during destroy; review the database
 before recording the appropriate marker through Ploi.
