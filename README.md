@@ -56,6 +56,8 @@ shipper --version
 
 ## Server lifecycle config
 
+Set `repository.provider` and `repository.name` to the Git provider connected to Ploi and the repository you want to deploy.
+
 Existing server:
 
 ```yaml
@@ -66,6 +68,9 @@ providers:
 projects:
   api:
     provider: ploi
+    repository:
+      provider: github
+      name: acme/api
     profiles:
       production:
         domain: "api.example.com"
@@ -85,6 +90,9 @@ providers:
 projects:
   api:
     provider: ploi
+    repository:
+      provider: github
+      name: acme/api
     profiles:
       preview:
         domain: "preview.example.com"
