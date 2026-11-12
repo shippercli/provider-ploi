@@ -41,9 +41,12 @@ This repository also contains the provider metadata and logo used by the Shipper
 
 ## Installation
 
+Install the tagged Ploi provider from GitHub with Composer's Git driver.
+
 ```bash
-composer global config repositories.shipper-ploi vcs https://github.com/shippercli/provider-ploi
+composer global config repositories.shipper-ploi git https://github.com/shippercli/provider-ploi.git
 composer global require shippercli/cli shippercli/provider-ploi
+shipper --version
 ```
 
 ## Requirements
