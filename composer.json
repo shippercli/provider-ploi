@@ -6,7 +6,8 @@
     "require": {
         "php": "^8.3",
         "ploi/ploi-php-sdk": "^1.9",
-        "shippercli/contracts": "^1.2"
+        "shippercli/contracts": "^1.2",
+        "vlucas/phpdotenv": "^5.6"
     },
     "require-dev": {
         "mockery/mockery": "^1.6",
@@ -37,5 +38,20 @@
         }
     },
     "minimum-stability": "stable",
-    "prefer-stable": true
+    "prefer-stable": true,
+    "archive": {
+        "exclude": [
+            "vendor",
+            "node_modules",
+            "tests",
+            ".github",
+            ".env*",
+            "auth.json",
+            "builds",
+            "box.phar",
+            ".phpunit*",
+            "phpunit.xml*",
+            ".phpstan*"
+        ]
+    }
 }

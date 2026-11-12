@@ -159,3 +159,144 @@ projects:
               plan: "vc2-1c-2gb"
               php_version: "8.3"
 ```
+
+
+## Creation option validation (2026-10-16)
+
+Server creation explicitly defaults to PHP `8.4` and database type `mysql84`,
+replacing the upstream SDK's implicit PHP `7.4` and unversioned MySQL defaults.
+If the project specifies `php_version` and the server spec omits it, the project
+version is used. An explicit server `php_version` wins, including `none` when PHP
+is not needed. Review the selected versions before creating new infrastructure;
+existing servers are not upgraded by this default change.
+
+Explicit server type, database type, PHP version, OS, webserver, and IP mode are
+checked against the values documented in the
+[Ploi create-server reference](https://developers.ploi.io/servers/create-server).
+Retired Ubuntu 22.04 and retired database selectors are rejected for new servers.
+`install_monitoring` must be a genuine YAML boolean. Invalid options are rejected
+in normal validation and again before the provider sends its create request.
+Bare engine aliases remain accepted where documented; their selected version can
+change upstream. Explicit values are not silently replaced.
+
+The regression checks the payload produced by the actual SDK with mocked HTTP,
+project-version inheritance, explicit overrides, and rejection before a create
+request. It does not establish live cloud availability, provider-specific
+OS/engine combinations, successful provisioning, or runtime health. Region,
+credential, and plan availability still depend on the account/provider.
+
+## Server discovery inventory
+
+Server discovery requires a list of objects with positive integer IDs and
+nonempty, unambiguous names. Scalar rows are not silently discarded. IDs must be
+unique across all pages; string integer IDs remain supported. Pagination requires
+an integral terminal page, and a supplied current page must match the request.
+Terminal-page and optional total metadata must remain consistent while walking
+pages. A supplied total must match the accumulated inventory. Later-page errors
+discard the partial result. These checks follow the documented
+[list-server response](https://developers.ploi.io/servers/list-servers) shape.
+
+Name resolution scans the complete validated result and refuses multiple servers
+with the managed name. Single-server and creation response IDs are not coerced
+from booleans, fractions, malformed numeric strings, or overflow values. Creation
+IDs are checked before the SDK's weak integer setter can truncate them.
+
+This guards readable identity/discovery decisions. It does not establish a
+transactional snapshot, independent ownership proof from names alone, or a lock
+against concurrent account changes. A create request can already have provisioned
+a server when an invalid acknowledgement is rejected; no automatic deletion is
+attempted in that situation.
+
+
+## Server deletion acknowledgement
+
+The lifecycle client accepts deletion only when the response contains the exact
+requested positive server ID and status `destroying`, with no contradictory
+error/failure fields. Missing payloads, message-only acknowledgements, foreign or
+malformed IDs, and an unchanged active state are refused. Diagnostics omit the
+server's free-form message. See the
+[documented delete response](https://developers.ploi.io/servers/delete-server).
+
+This acknowledges an asynchronous operation. The lifecycle client now reads the
+server before deletion, sends at most one DELETE, validates the acknowledgement,
+and waits for a subsequent HTTP 404 on that server endpoint before returning
+success. A server already reported as `destroying` is polled without resending
+DELETE. An initial 404 is idempotent API absence. Permission/server errors,
+contradictory metadata, and foreign identities are not treated as absence.
+
+The default verification window is 30 seconds with one-second polling. A request
+already in flight can finish after that window; the transport's per-attempt
+30-second timeout also applies. If the server remains visible, cleanup fails with
+an unconfirmed-deletion diagnostic. Retrying a still-destroying server rechecks
+its status instead of sending another DELETE. An unreadable acknowledgement is
+not retried automatically, since the request may already have acted.
+
+A 404 verifies control-plane absence as observed by this account, not physical
+cloud termination or the absence of all related resources. Live completion,
+shared lifecycle locking, and concurrent account changes remain unverified. Mock
+and real local HTTP tests cover the sequence and refusal cases; no real server
+was deleted during the audit.
+
+Server inventory pages and creation responses reject explicit API errors or a
+present `success` flag other than boolean `true`, even when identities and
+pagination otherwise look valid. The diagnostic does not echo response error
+text. Rejection of a creation acknowledgement does not prove the server was
+never created: inspect the account before retrying to avoid duplicate servers.
+
+Other paginated resource inventories also reject explicit API errors and
+unsuccessful flags. The last-page value must stay stable across pages. When a
+`total` is supplied, it must be a nonnegative integer or canonical decimal
+string, remain present and unchanged, and match the final number of records.
+A present null current-page value is invalid. Missing optional total/current
+metadata remains supported. These checks reject inconsistent observations;
+they do not create a snapshot or prevent concurrent remote changes.
+
+Site discovery validates the complete inventory before choosing any matching
+domain. Positive integer site IDs and nonempty trimmed domains are required;
+duplicate IDs or domains (including differences only in letter case) block
+planning and execution. Apply, status, site listing, and cleanup use this same
+check, so an early domain match cannot hide a later invalid or duplicate record.
+These observations do not establish independent ownership or prevent a change
+between discovery and a later mutation; the ownership marker is still required.
+
+Database discovery also validates all record IDs and names before selecting a
+match; duplicate IDs/names or missing identities block reuse and cleanup. Site
+association IDs must be positive integers or canonical decimal strings matching
+the site exactly. Fractions, exponents, whitespace and trailing text are not
+coerced into an ownership match. This does not add an existing-database attach
+operation: the API association limitation described above still applies.
+
+Database cleanup now reads a fresh validated database inventory after each
+DELETE and requires both the deleted ID and name to be absent before continuing
+to site deletion. A still-visible, renamed, or recreated record, unreadable
+inventory, or explicit API error stops cleanup. A documented empty DELETE body
+is accepted as an acknowledgement, not as proof of absence. The check performs
+one fresh read: asynchronous deletion can return an unconfirmed result requiring
+a status recheck before retry. It proves control-plane inventory absence at that
+observation, not physical erasure, backup deletion, or a transaction with site
+cleanup. No automatic second DELETE is sent by this verification.
+
+API reference: https://developers.ploi.io/databases/delete-database
+
+Site deletion now reads a validated inventory before mutation and again after
+an acknowledgement. A missing target needs no DELETE. For a present target,
+cleanup requires a nonempty message without explicit errors and a fresh read
+showing neither the old ID nor its domain (case-insensitive). Invalid responses,
+unreadable inventories, a retained ID, or a recreated domain stop cleanup and
+prevent the create-mode flow from proceeding to server cleanup. Error messages
+are fixed diagnostics rather than echoed API text. The documented response is
+an object with a `message`: https://developers.ploi.io/sites/delete-site
+
+This performs one post-delete observation, does not resend DELETE, and can
+report unconfirmed while asynchronous work is pending. It verifies account
+inventory absence at that point, not physical filesystem erasure or a transaction
+across site, database, workload and server cleanup. Live verification remains
+required.
+
+The protected API adapter validates nonempty successful response bodies as JSON
+objects before passing them to the SDK. Malformed JSON, invalid UTF-8, arrays,
+scalars, and JSON null fail with a fixed diagnostic and no chained payload
+exception. Empty DELETE bodies and HTTP 204 responses remain supported;
+resource-specific validation and absence checks still determine completion.
+Validated bytes are copied into a seekable stream so SDK decoding sees the same
+body even when the original transport stream cannot rewind.

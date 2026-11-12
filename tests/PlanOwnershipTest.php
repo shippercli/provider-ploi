@@ -1,0 +1,58 @@
+<?php
+
+use Mockery as m;
+use Ploi\Ploi;
+use Ploi\Resources\Site;
+use Ploi\Resources\Server;
+use Ploi\Resources\Database;
+use ShipperCli\ProviderPloi\PloiProvider;
+
+test('existing-server plans verify ownership without writes', function (string $mode): void {
+    $client = m::mock(Ploi::class);
+    $server = m::mock(Server::class);
+    $sites = m::mock(Site::class);
+    $client->shouldReceive('server')->with(123)->andReturn($server);
+    $server->shouldReceive('sites')->withNoArgs()->once()->andReturn($sites);
+    $sites->shouldNotReceive('create');
+    $sites->shouldNotReceive('delete');
+    if ($mode === 'error') {
+        $sites->shouldReceive('page')->once()->andThrow(new RuntimeException('sensitive error'));
+    } else {
+        $siteDomain = $mode === 'uppercase' ? 'preview.example.com' : ($mode === 'new' ? null : 'preview.example.com');
+        $sites->shouldReceive('page->getJson')->andReturn((object) ['data' => $siteDomain === null ? [] : [(object) ['id' => 55, 'domain' => $siteDomain]], 'meta' => (object) ['last_page' => 1]]);
+        if ($mode !== 'new') {
+            $server->shouldReceive('sites')->with(55)->zeroOrMoreTimes()->andReturn($sites);
+            $marker = hash('sha256', json_encode(['api', 'preview'], JSON_THROW_ON_ERROR));
+            $env = match ($mode) {
+                'owned' => 'SHIPPERCLI_OWNERSHIP='.$marker,
+                'malformed' => 'SHIPPERCLI_OWNERSHIP="unterminated',
+                default => 'SHIPPERCLI_OWNERSHIP=another-scope',
+            };
+            $sites->shouldReceive('environment->get->getJson')->once()->andReturn((object) ['data' => (object) ['content' => $env]]);
+            if ($mode === 'owned') {
+                $dbs = m::mock(Database::class);
+                $server->shouldReceive('databases')->once()->andReturn($dbs);
+                $dbs->shouldReceive('page->getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
+                $sites->shouldReceive('environment->get->getJson')->once()->andReturn((object) ['data' => (object) ['content' => $env]]);
+            }
+        }
+    }
+    $provider = new class($client) extends PloiProvider {
+        public function __construct(private Ploi $fakeClient) { parent::__construct(['server_id' => '123']); }
+        protected function getClient(): Ploi { return $this->fakeClient; }
+    };
+    $project = new class { public function name(): string { return 'api'; } };
+    $profile = new class($mode === 'uppercase' ? 'PREVIEW.EXAMPLE.COM' : 'preview.example.com') {
+        public function __construct(private string $domain) {}
+        public function name(): string { return 'preview'; }
+        public function get(string $key): mixed { return $key === 'domain' ? $this->domain : null; }
+    };
+    $plan = $provider->plan($project, $profile);
+    expect($plan['blocked'])->toBe(! in_array($mode, ['new', 'owned'], true));
+    if ($plan['blocked']) {
+        expect($plan['actions'])->toHaveCount(1)
+            ->and($plan['actions'][0])->toStartWith('BLOCKED:')
+            ->not->toContain('sensitive error');
+    }
+    m::close();
+})->with(['new', 'owned', 'uppercase', 'unowned', 'malformed', 'error']);

@@ -1,0 +1,370 @@
+<?php
+
+use Mockery as m;
+use Ploi\Resources\Server;
+use Ploi\Resources\Database;
+use Ploi\Http\Response;
+use ShipperCli\ProviderPloi\PloiProvider;
+
+function ploiDatabaseProject(): object
+{
+    return new class {
+        public function name(): string { return 'api'; }
+        public function databases(): array {
+            return array_map(static fn (string $name): object => new class($name) {
+                public function __construct(private string $database) {}
+                public function name(): string { return $this->database; }
+                public function user(): string { return '${PROJECT_NAME}_${PROFILE}_'.$this->database; }
+            }, ['main', 'analytics']);
+        }
+    };
+}
+
+test('all new Ploi databases deliver distinct connection environments and retain ownership', function (): void {
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $page = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->with(1, 50)->twice()->andReturn($page);
+    $passwords = [];
+    $databases->shouldReceive('create')->twice()->andReturnUsing(function (string $name, string $user, string $password, mixed $description, int $site) use (&$passwords): Response {
+        expect($site)->toBe(55)->and($user)->toBe('api_production_'.$name);
+        $passwords[$name] = $password;
+        $created = m::mock(Response::class);
+        $created->shouldReceive('getJson')->once()->andReturn((object) ['data' => (object) ['id' => count($passwords), 'name' => $name]]);
+        return $created;
+    });
+    $server->shouldReceive('databases')->times(4)->andReturn($databases);
+    $stored = "APP_ENV=production\n";
+    ploiConnectionDeliveryFixture($server, $stored);
+    $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    (new ReflectionProperty($provider, 'generatedEnvironment'))->setValue($provider, ['SHIPPERCLI_OWNERSHIP' => 'retained-marker']);
+    $profile = new class { public function name(): string { return 'production'; } };
+    expect((new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), $profile))->toBeTrue();
+    $env = (new ReflectionProperty($provider, 'generatedEnvironment'))->getValue($provider);
+    expect($env['DB_PASSWORD'])->toBe($passwords['main'])
+        ->and($env['ANALYTICS_DB_PASSWORD'])->toBe($passwords['analytics'])
+        ->and($passwords['main'])->not->toBe($passwords['analytics'])
+        ->and($env['SHIPPERCLI_OWNERSHIP'])->toBe('retained-marker');
+});
+
+test('ambiguous Ploi database mappings fail before database API calls', function (array $prefixes): void {
+    $server = m::mock(Server::class);
+    $server->shouldNotReceive('databases');
+    $provider = new PloiProvider(['database_environment_prefixes' => $prefixes]);
+    (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), new stdClass);
+})->with([[[]], [['main' => 'DB', 'analytics' => 'DB']]])->throws(InvalidArgumentException::class);
+
+test('unmarked existing Ploi databases require exact-scope adoption consent', function (string $content, bool $consent, bool $valid): void {
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $site = m::mock(\Ploi\Resources\Site::class);
+    $page = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [(object) ['id' => 9, 'name' => 'main', 'site' => (object) ['id' => 55]]], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->with(1, 50)->once()->andReturn($page);
+    $databases->shouldNotReceive('create');
+    $server->shouldReceive('databases')->once()->andReturn($databases);
+    $server->shouldReceive('sites')->with(55)->zeroOrMoreTimes()->andReturn($site);
+    $stored = $content;
+    $environment = m::mock(\Ploi\Resources\Environment::class);
+    $site->shouldReceive('environment')->andReturn($environment);
+    $environment->shouldReceive('get')->andReturnUsing(function () use (&$stored): Response {
+        $response = m::mock(Response::class);
+        $response->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['content' => $stored]]);
+        return $response;
+    });
+    $environment->shouldReceive('update')->andReturnUsing(function (string $new) use (&$stored): Response {
+        $stored = $new;
+        return m::mock(Response::class);
+    });
+    $project = new class {
+        public function name(): string { return 'api'; }
+        public function databases(): array { return [new class {
+            public function name(): string { return 'main'; }
+            public function user(): string { return 'api'; }
+        }]; }
+    };
+    $profile = new class($consent) {
+        public function __construct(private bool $consent) {}
+        public function name(): string { return 'production'; }
+        public function get(string $key): mixed { return $key === 'ploi' && $this->consent ? ['adopt_existing_databases' => [['project' => 'api', 'profile' => 'production', 'name' => 'main']]] : null; }
+    };
+    $provider = new PloiProvider;
+    $result = (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, $project, $profile);
+    expect($result)->toBe($valid)
+        ->and($valid ? $stored : '')->toContain($valid ? 'adopted:' : '')
+        ->and($provider->getLastError())->not->toContain('retained-secret');
+})->with([
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD='retained-secret'", false, false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD='retained-secret'", true, true],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api", true, false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=other\nDB_USERNAME=api\nDB_PASSWORD=retained-secret", true, false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=''", true, false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=\"line one\nline two\"", true, true],
+    ["DB_PASSWORD=\"unterminated", true, false],
+    ["DB_HOST=127.0.0.1\nDB_DATABASE=main\nDB_USERNAME=api\nDB_PASSWORD=retained-secret\nBROKEN=\"unfinished", true, false],
+]);
+
+test('Ploi database lifecycle markers distinguish adopted from created resources', function (): void {
+    $provider = new PloiProvider;
+    $project = new class { public function name(): string { return 'api'; } };
+    $profile = new class { public function name(): string { return 'production'; } };
+    $marker = hash('sha256', json_encode(['api', 'production', 'main'], JSON_THROW_ON_ERROR));
+    $keyMethod = new ReflectionMethod($provider, 'databaseOwnershipKey');
+    $markerMethod = new ReflectionMethod($provider, 'databaseOwnershipMarker');
+    expect($keyMethod->invoke($provider, 'main'))->toBe('SHIPPERCLI_DATABASE_'.strtoupper(substr(hash('sha256', 'main'), 0, 24)))
+        ->and($markerMethod->invoke($provider, $project, $profile, 'main'))->toBe($marker)
+        ->and('adopted:'.$marker)->not->toBe('created:'.$marker);
+});
+
+
+test('database creation refuses unconfirmed identities before recording credentials', function (mixed $json): void {
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $page = m::mock(Response::class);
+    $created = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->with(1, 50)->once()->andReturn($page);
+    $databases->shouldReceive('create')->once()->andReturn($created);
+    $created->shouldReceive('getJson')->once()->andReturn($json);
+    $server->shouldReceive('databases')->twice()->andReturn($databases);
+    $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    $failure = null;
+    try {
+        (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), new stdClass);
+    } catch (RuntimeException $error) {
+        $failure = $error;
+    }
+    expect($failure)->toBeInstanceOf(RuntimeException::class)
+        ->and($failure?->getMessage())->toBe('Ploi did not confirm the requested database creation identity.')
+        ->and((new ReflectionProperty($provider, 'generatedEnvironment'))->getValue($provider))->toBe([]);
+})->with([
+    [null], [(object) []],
+    [(object) ['data' => (object) ['id' => 0, 'name' => 'main']]],
+    [(object) ['data' => (object) ['id' => 9, 'name' => 'foreign']]],
+    [(object) ['data' => (object) ['id' => 9, 'name' => 'main', 'site' => (object) ['id' => 56]]]],
+    [(object) ['success' => false, 'data' => (object) ['id' => 9, 'name' => 'main']]],
+    [(object) ['errors' => ['synthetic-secret'], 'data' => (object) ['id' => 9, 'name' => 'main']]],
+]);
+
+
+test('resolved Ploi database name collisions stop before database API calls', function (): void {
+    $project = new class {
+        public function name(): string { return 'api'; }
+        public function databases(): array { return array_map(static fn (string $name): object => new class($name) {
+            public function __construct(private string $databaseName) {}
+            public function name(): string { return $this->databaseName; }
+            public function user(): string { return 'fixture_user'; }
+        }, ['${PROJECT_NAME}_${PROFILE}', 'api_production']); }
+    };
+    $profile = new class { public function name(): string { return 'production'; } };
+    $server = m::mock(Server::class);
+    $server->shouldNotReceive('databases');
+    $provider = new PloiProvider(['database_environment_prefixes' => ['${PROJECT_NAME}_${PROFILE}' => 'DB', 'api_production' => 'OTHER_DB']]);
+    expect(fn () => (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, $project, $profile))
+        ->toThrow(InvalidArgumentException::class, 'Resolved Ploi database names must be unique.');
+    expect($provider->validate($project, $profile))->toContain('Resolved Ploi database names must be unique.');
+    expect(fn () => $provider->plan($project, $profile))->toThrow(InvalidArgumentException::class, 'Resolved Ploi database names must be unique.');
+    expect($provider->apply($project, $profile))->toBeFalse()
+        ->and($provider->getLastError())->toContain('Resolved Ploi database names must be unique.');
+    expect($provider->destroy($project, $profile))->toBeFalse()
+        ->and($provider->getLastError())->toContain('Resolved Ploi database names must be unique.');
+});
+
+test('explicit Ploi connection passwords reach creation and generated environment unchanged', function (): void {
+    $secret = 'literal-${PROJECT_NAME}-${PROFILE}-+%:@';
+    $profile = new class($secret) {
+        public function __construct(private string $secret) {}
+        public function name(): string { return 'production'; }
+        public function environment(): object { return new class($this->secret) {
+            public function __construct(private string $secret) {}
+            public function variables(): array { return ['DB_PASSWORD' => $this->secret]; }
+        }; }
+    };
+    $project = new class {
+        public function name(): string { return 'api'; }
+        public function databases(): array { return ploiDatabaseProject()->databases(); }
+        public function environment(): object { return new class {
+            public function variables(): array { return ['DB_PASSWORD' => 'project-default-secret']; }
+        }; }
+    };
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $page = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->twice()->andReturn($page);
+    $passwords = [];
+    $databases->shouldReceive('create')->twice()->andReturnUsing(function ($name, $user, $password) use (&$passwords): Response {
+        $passwords[$name] = $password;
+        $response = m::mock(Response::class);
+        $response->shouldReceive('getJson')->once()->andReturn((object) ['data' => (object) ['id' => count($passwords), 'name' => $name]]);
+        return $response;
+    });
+    $server->shouldReceive('databases')->times(4)->andReturn($databases);
+    $stored = "APP_ENV=production\n";
+    ploiConnectionDeliveryFixture($server, $stored);
+    $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    expect((new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, $project, $profile))->toBeTrue();
+    $environment = (new ReflectionProperty($provider, 'generatedEnvironment'))->getValue($provider);
+    expect($passwords['main'])->toBe($secret)->and($environment['DB_PASSWORD'])->toBe($secret)
+        ->and($passwords['analytics'])->not->toBe($secret)
+        ->and($environment['ANALYTICS_DB_PASSWORD'])->toBe($passwords['analytics']);
+});
+
+test('invalid explicit Ploi passwords stop before provisioning any database', function (mixed $password): void {
+    $profile = new class($password) {
+        public function __construct(private mixed $password) {}
+        public function environment(): object { return new class($this->password) {
+            public function __construct(private mixed $password) {}
+            public function variables(): array { return ['ANALYTICS_DB_PASSWORD' => $this->password]; }
+        }; }
+    };
+    $server = m::mock(Server::class);
+    $server->shouldNotReceive('databases');
+    $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    expect(fn () => (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), $profile))
+        ->toThrow(InvalidArgumentException::class, 'Explicit Ploi database passwords must be nonempty strings.');
+    expect($provider->validate(ploiDatabaseProject(), $profile))->toContain('Explicit Ploi database passwords must be nonempty strings.');
+    expect($provider->apply(ploiDatabaseProject(), $profile))->toBeFalse()
+        ->and($provider->getLastError())->toBe('Deployment error: Explicit Ploi database passwords must be nonempty strings. (Type: InvalidArgumentException)');
+})->with([[''], [null], [false], [123]]);
+
+
+test('confirmed Ploi credentials are stored before a later database creation fails', function (): void {
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $page = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->twice()->andReturn($page);
+    $server->shouldReceive('databases')->times(4)->andReturn($databases);
+    $stored = "APP_ENV=production\n";
+    ploiConnectionDeliveryFixture($server, $stored);
+    $password = null;
+    $deliveredBeforeFailure = false;
+    $databases->shouldReceive('create')->with('main', 'api_production_main', m::type('string'), null, 55)->once()
+        ->andReturnUsing(function ($name, $user, $secret) use (&$password): Response {
+            $password = $secret;
+            $response = m::mock(Response::class);
+            $response->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['id' => 9, 'name' => $name]]);
+            return $response;
+        });
+    $databases->shouldReceive('create')->with('analytics', 'api_production_analytics', m::type('string'), null, 55)->once()
+        ->andReturnUsing(function () use (&$stored, &$password, &$deliveredBeforeFailure): never {
+            $deliveredBeforeFailure = (\Dotenv\Dotenv::parse($stored)['DB_PASSWORD'] ?? null) === $password;
+            throw new RuntimeException('Synthetic later creation failure');
+        });
+    $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    expect(fn () => (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), new class {
+        public function name(): string { return 'production'; }
+    }))->toThrow(RuntimeException::class, 'Ploi did not confirm the requested database creation identity.');
+    expect($deliveredBeforeFailure)->toBeTrue();
+    expect(\Dotenv\Dotenv::parse($stored))->toMatchArray(['APP_ENV' => 'production', 'DB_PASSWORD' => $password]);
+
+    // Retry with a new provider and inventory containing the successful first creation.
+    $retryServer = m::mock(Server::class);
+    $retryDatabases = m::mock(Database::class);
+    $retryPage = m::mock(Response::class);
+    $retryPage->shouldReceive('getJson')->andReturn((object) ['data' => [(object) [
+        'id' => 9, 'name' => 'main', 'site' => (object) ['id' => 55],
+    ]], 'meta' => (object) ['last_page' => 1]]);
+    $retryDatabases->shouldReceive('page')->twice()->andReturn($retryPage);
+    $retryServer->shouldReceive('databases')->times(3)->andReturn($retryDatabases);
+    ploiConnectionDeliveryFixture($retryServer, $stored);
+    $ownershipKey = 'SHIPPERCLI_DATABASE_'.strtoupper(substr(hash('sha256', 'main'), 0, 24));
+    $scopeMarker = hash('sha256', json_encode(['api', 'production', 'main'], JSON_THROW_ON_ERROR));
+    $analyticsPassword = null;
+    $retryDatabases->shouldReceive('create')->with('analytics', 'api_production_analytics', m::type('string'), null, 55)->once()
+        ->andReturnUsing(function ($name, $user, $secret) use (&$analyticsPassword): Response {
+            $analyticsPassword = $secret;
+            $response = m::mock(Response::class);
+            $response->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['id' => 10, 'name' => $name]]);
+            return $response;
+        });
+    $retry = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    expect((new ReflectionMethod($retry, 'applyDatabases'))->invoke($retry, $retryServer, 55, ploiDatabaseProject(), new class {
+        public function name(): string { return 'production'; }
+    }))->toBeTrue();
+    expect(\Dotenv\Dotenv::parse($stored))->toMatchArray([
+        'APP_ENV' => 'production', 'DB_DATABASE' => 'main', 'DB_USERNAME' => 'api_production_main',
+        'DB_PASSWORD' => $password, 'ANALYTICS_DB_DATABASE' => 'analytics',
+        'ANALYTICS_DB_PASSWORD' => $analyticsPassword,
+    ]);
+});
+
+function ploiConnectionDeliveryFixture(object $server, string &$stored, string $mode = 'valid'): void
+{
+    $site = m::mock(\Ploi\Resources\Site::class);
+    $environment = m::mock(\Ploi\Resources\Environment::class);
+    $server->shouldReceive('sites')->with(55)->andReturn($site);
+    $site->shouldReceive('environment')->andReturn($environment);
+    $environment->shouldReceive('get')->andReturnUsing(function () use (&$stored, $mode): Response {
+        $response = m::mock(Response::class);
+        $response->shouldReceive('getJson')->andReturn($mode === 'unreadable' ? (object) [] : (object) ['data' => (object) ['content' => $stored]]);
+        return $response;
+    });
+    $environment->shouldReceive('update')->andReturnUsing(function (string $content) use (&$stored, $mode): Response {
+        if ($mode === 'write-failure') {
+            throw new RuntimeException('synthetic-secret');
+        }
+        if ($mode !== 'ignored-write') {
+            $stored = $content;
+        }
+        return m::mock(Response::class);
+    });
+}
+
+
+test('Ploi connection delivery failure stops later database creation', function (string $mode): void {
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $page = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->once()->andReturn($page);
+    $server->shouldReceive('databases')->twice()->andReturn($databases);
+    $created = m::mock(Response::class);
+    $created->shouldReceive('getJson')->andReturn((object) ['data' => (object) ['id' => 9, 'name' => 'main']]);
+    $databases->shouldReceive('create')->with('main', 'api_production_main', m::type('string'), null, 55)->once()->andReturn($created);
+    $stored = $mode === 'malformed' ? 'BROKEN="unfinished' : "APP_ENV=production\n";
+    ploiConnectionDeliveryFixture($server, $stored, $mode);
+    $provider = new PloiProvider(['database_environment_prefixes' => ['main' => 'DB', 'analytics' => 'ANALYTICS_DB']]);
+    expect(fn () => (new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, ploiDatabaseProject(), new class {
+        public function name(): string { return 'production'; }
+    }))->toThrow(RuntimeException::class, 'Ploi did not confirm storage of the created database connection; provisioning stopped.');
+})->with(['unreadable', 'malformed', 'write-failure', 'ignored-write']);
+
+
+test('configured credentials cannot mask an unreadable Ploi environment', function (mixed $json): void {
+    $server = m::mock(Server::class);
+    $databases = m::mock(Database::class);
+    $page = m::mock(Response::class);
+    $page->shouldReceive('getJson')->andReturn((object) ['data' => [(object) [
+        'id' => 9, 'name' => 'main', 'site' => (object) ['id' => 55],
+    ]], 'meta' => (object) ['last_page' => 1]]);
+    $databases->shouldReceive('page')->once()->andReturn($page);
+    $databases->shouldNotReceive('create');
+    $server->shouldReceive('databases')->once()->andReturn($databases);
+    $site = m::mock(\Ploi\Resources\Site::class);
+    $server->shouldReceive('sites')->with(55)->once()->andReturn($site);
+    $site->shouldReceive('environment->get->getJson')->once()->andReturn($json);
+    $project = new class {
+        public function name(): string { return 'api'; }
+        public function databases(): array { return [new class {
+            public function name(): string { return 'main'; }
+            public function user(): string { return 'api'; }
+        }]; }
+        public function environment(): object { return new class {
+            public function variables(): array { return [
+                'DB_HOST' => '127.0.0.1', 'DB_DATABASE' => 'main',
+                'DB_USERNAME' => 'api', 'DB_PASSWORD' => 'configured-secret',
+            ]; }
+        }; }
+    };
+    $provider = new PloiProvider;
+    expect((new ReflectionMethod($provider, 'applyDatabases'))->invoke($provider, $server, 55, $project, new stdClass))->toBeFalse();
+    expect($provider->getLastError())->not->toContain('configured-secret');
+})->with([
+    [null], [(object) []], [(object) ['data' => (object) ['content' => null]]],
+    [(object) ['data' => (object) ['content' => 123]]],
+    [(object) ['success' => false, 'data' => (object) ['content' => '']]],
+    [(object) ['errors' => ['synthetic-secret'], 'data' => (object) ['content' => '']]],
+]);
