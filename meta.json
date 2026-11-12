@@ -22,5 +22,5 @@
     "api_key": "${PLOI_API_KEY}",
     "server_id": 105556
   },
-  "install": "composer require shippercli/provider-ploi"
+  "install": "composer config repositories.shipper-ploi git https://github.com/shippercli/provider-ploi.git\ncomposer require 'shippercli/cli:^1.0.5' 'shippercli/provider-ploi:^2.0'"
 }
