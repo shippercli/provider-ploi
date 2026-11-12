@@ -42,7 +42,8 @@ This repository also contains the provider metadata and logo used by the Shipper
 ## Installation
 
 ```bash
-composer global require shippercli/provider-ploi
+composer global config repositories.shipper-ploi vcs https://github.com/shippercli/provider-ploi
+composer global require shippercli/cli shippercli/provider-ploi
 ```
 
 ## Requirements
