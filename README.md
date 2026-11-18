@@ -298,3 +298,5 @@ Consumers depending on arbitrary nested site fields must use the documented
 summary instead. A site's existence is not proof of deployment: absent sites are
 `not_found`, while missing/malformed status is `unknown`. An observed state does
 not uniquely identify completion of the deployment just triggered.
+
+[![advertisement](https://ads.servead.net/i/574a1584-8b0e-4bf7-bc2d-b82ca26ffff4.svg)](https://ads.servead.net/c/574a1584-8b0e-4bf7-bc2d-b82ca26ffff4)
